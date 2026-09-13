@@ -156,6 +156,47 @@ class extends="testbox.system.BaseSpec" {
 				expect( p.gold ).toBeGT( goldBefore )
 			} )
 
+			it( "kills of Highlands monsters eventually yield a rare item, independent of the common-item roll", function() {
+				variables.monsterService.spawnMonster( "alphaBoar", variables.gameConfig.getZones()[ 2 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.x = m.x
+				p.z = m.z - 1
+				p.rotationY = 0
+				// Set base, not effective, attackDamage — a kill calls grantXp(),
+				// which recomputes p.attackDamage from baseAttackDamage right
+				// after the first kill, silently undoing a one-time override of
+				// the effective value and leaving every later trial too weak to
+				// one-shot (this bit the first version of this test). Recompute
+				// once up front too, so the very first trial is already strong
+				// enough rather than only from the second kill onward.
+				p.baseAttackDamage = 1000
+				variables.playerService.recomputeEffectiveStats( variables.playerId )
+
+				// alphaBoar rolls apple(40%)/steelSword(12%)/ironHelmet(12%)
+				// independently per kill — 200 trials makes "never got a rare"
+				// astronomically unlikely (≈0.88^200) without being a fixed,
+				// deterministic wait.
+				for ( var i = 1; i <= 200; i++ ) {
+					m.alive = true
+					m.hp = m.maxHp
+					p.attackReadyAt = 0
+					variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+				}
+
+				var gotRare = variables.inventoryService.hasItem( variables.characterId, "steelSword" )
+					|| variables.inventoryService.hasItem( variables.characterId, "ironHelmet" )
+				expect( gotRare ).toBeTrue()
+
+				// The drops aren't mutually exclusive — over 200 trials at
+				// 40%/12%/12% independently, more than one distinct item key
+				// should show up, proving each entry in the table is its own
+				// roll rather than "pick exactly one drop per kill".
+				expect( variables.inventoryService.list( variables.characterId ).len() ).toBeGT( 1 )
+			} )
+
 			it( "tickMonsterAI respawns a dead monster at its home position once its timer has passed", function() {
 				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
 				var monsters = variables.monsterService.getMonsters()

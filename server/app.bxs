@@ -104,6 +104,8 @@ app.ws( "/game", ( connection ) => {
 			playerService.handleUnequipItem( playerId, data.slot )
 		} else if ( data.type == "buyItem" ) {
 			playerService.handleBuyItem( playerId, data.itemKey )
+		} else if ( data.type == "sellItem" ) {
+			playerService.handleSellItem( playerId, data.itemKey )
 		}
 
 		playerService.maybeAutosave( playerId )

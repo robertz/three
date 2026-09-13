@@ -250,6 +250,49 @@ class extends="testbox.system.BaseSpec" {
 				expect( variables.inventoryService.hasItem( variables.characterId, "apple" ) ).toBeTrue()
 			} )
 
+			it( "handleSellItem rejects a sale made too far from the shop, leaving inventory/gold unchanged", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var npc = variables.gameConfig.getNpcs()[ "shopkeeper1" ]
+				variables.inventoryService.addItem( variables.characterId, "apple" )
+				p.gold = 0
+				p.x = npc.x + 500
+				p.z = npc.z + 500
+
+				variables.playerService.handleSellItem( playerId, "apple" )
+
+				expect( p.gold ).toBe( 0 )
+				expect( variables.inventoryService.hasItem( variables.characterId, "apple" ) ).toBeTrue()
+			} )
+
+			it( "handleSellItem rejects selling an item the player doesn't own, leaving gold unchanged", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var npc = variables.gameConfig.getNpcs()[ "shopkeeper1" ]
+				p.x = npc.x
+				p.z = npc.z
+				p.gold = 0
+
+				variables.playerService.handleSellItem( playerId, "apple" )
+
+				expect( p.gold ).toBe( 0 )
+			} )
+
+			it( "handleSellItem succeeds in range, removing the item and adding its exact sell price in gold", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var npc = variables.gameConfig.getNpcs()[ "shopkeeper1" ]
+				variables.inventoryService.addItem( variables.characterId, "apple" )
+				p.x = npc.x
+				p.z = npc.z
+				p.gold = 0
+
+				variables.playerService.handleSellItem( playerId, "apple" )
+
+				expect( p.gold ).toBe( 2 ) // apple's sellPrice
+				expect( variables.inventoryService.hasItem( variables.characterId, "apple" ) ).toBeFalse()
+			} )
+
 			it( "disconnect persists base stats/gold to the database and removes the player from the live struct", function() {
 				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
 				variables.playerService.addGold( playerId, 33 )

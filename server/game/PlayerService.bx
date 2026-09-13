@@ -260,7 +260,7 @@ class {
 		var items = []
 		for ( var row in variables.inventoryService.list( p.characterId ) ) {
 			var itemType = itemTypes[ row.key ]
-			items.append( { key: row.key, name: itemType.name, usable: itemType.usable, quantity: row.quantity, equipSlot: itemType.equipSlot } )
+			items.append( { key: row.key, name: itemType.name, usable: itemType.usable, quantity: row.quantity, equipSlot: itemType.equipSlot, rarity: itemType.rarity, sellPrice: itemType.sellPrice } )
 		}
 		sendToPlayer( playerId, { type: "inventory", items: items } )
 	}
@@ -271,7 +271,7 @@ class {
 		var slots = []
 		for ( var slot in variables.gameConfig.getEquipSlots() ) {
 			var key = p.equipment[ slot ]
-			slots.append( { slot: slot, key: key, name: len( key ) ? itemTypes[ key ].name : "" } )
+			slots.append( { slot: slot, key: key, name: len( key ) ? itemTypes[ key ].name : "", rarity: len( key ) ? itemTypes[ key ].rarity : "" } )
 		}
 		sendToPlayer( playerId, { type: "equipment", slots: slots } )
 	}
@@ -347,7 +347,7 @@ class {
 		var items = []
 		for ( var key in variables.gameConfig.getShopCatalog() ) {
 			var t = itemTypes[ key ]
-			items.append( { key: key, name: t.name, price: t.price, equipSlot: t.equipSlot } )
+			items.append( { key: key, name: t.name, price: t.price, equipSlot: t.equipSlot, rarity: t.rarity } )
 		}
 		sendToPlayer( playerId, { type: "shopCatalog", items: items } )
 	}
@@ -372,6 +372,30 @@ class {
 
 		p.gold -= price
 		variables.inventoryService.addItem( p.characterId, itemKey )
+		sendStats( playerId )
+		sendInventory( playerId )
+		persist( playerId )
+	}
+
+	function handleSellItem( playerId, itemKey ) {
+		var p = variables.players[ playerId ]
+		var itemTypes = variables.gameConfig.getItemTypes()
+		if ( !structKeyExists( itemTypes, itemKey ) ) {
+			return
+		}
+		var sellPrice = itemTypes[ itemKey ].sellPrice
+		if ( sellPrice <= 0 || !variables.inventoryService.hasItem( p.characterId, itemKey ) ) {
+			return
+		}
+
+		var npc = variables.gameConfig.getNpcs()[ "shopkeeper1" ]
+		var dist = variables.javaMath.sqrt( ( ( p.x - npc.x ) * ( p.x - npc.x ) ) + ( ( p.z - npc.z ) * ( p.z - npc.z ) ) )
+		if ( dist > variables.gameConfig.getShopRange() ) {
+			return
+		}
+
+		variables.inventoryService.removeItem( p.characterId, itemKey )
+		p.gold += sellPrice
 		sendStats( playerId )
 		sendInventory( playerId )
 		persist( playerId )

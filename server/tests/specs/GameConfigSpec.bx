@@ -57,6 +57,81 @@ class extends="testbox.system.BaseSpec" {
 				expect( gameConfig.getEquipSlots() ).toBe( [ "weapon", "helmet", "chest", "trinket" ] )
 			} )
 
+			it( "gives every item type a rarity, and every equip slot a matching common + rare pair", function() {
+				var gameConfig = new game.GameConfig()
+				var itemTypes = gameConfig.getItemTypes()
+
+				for ( var key in itemTypes ) {
+					expect( itemTypes[ key ] ).toHaveKey( "rarity" )
+					expect( [ "common", "rare" ] ).toInclude( itemTypes[ key ].rarity )
+				}
+
+				var rareBySlot = {}
+				for ( var key in itemTypes ) {
+					if ( itemTypes[ key ].rarity == "rare" ) {
+						rareBySlot[ itemTypes[ key ].equipSlot ] = key
+					}
+				}
+				for ( var slot in gameConfig.getEquipSlots() ) {
+					expect( rareBySlot ).toHaveKey( slot )
+				}
+			} )
+
+			it( "gives every item type a positive sell price, even ones that can't be bought", function() {
+				var gameConfig = new game.GameConfig()
+				var itemTypes = gameConfig.getItemTypes()
+
+				for ( var key in itemTypes ) {
+					expect( itemTypes[ key ] ).toHaveKey( "sellPrice" )
+					expect( itemTypes[ key ].sellPrice ).toBeGT( 0 )
+				}
+			} )
+
+			it( "never lists a rare item in the purchasable shop catalog", function() {
+				var gameConfig = new game.GameConfig()
+				var itemTypes = gameConfig.getItemTypes()
+
+				for ( var key in gameConfig.getShopCatalog() ) {
+					expect( itemTypes[ key ].rarity ).toBe( "common" )
+				}
+			} )
+
+			it( "gives every monster type a non-empty drop table referencing real items", function() {
+				var gameConfig = new game.GameConfig()
+				var itemTypes = gameConfig.getItemTypes()
+				var monsterTypes = gameConfig.getMonsterTypes()
+
+				for ( var typeKey in monsterTypes ) {
+					var drops = monsterTypes[ typeKey ].drops
+					expect( drops.len() ).toBeGT( 0 )
+					for ( var drop in drops ) {
+						expect( itemTypes ).toHaveKey( drop.item )
+						expect( drop.chance ).toBeGT( 0 )
+						expect( drop.chance ).toBeLTE( 1 )
+					}
+				}
+			} )
+
+			it( "gives the Highlands monsters a shot at a rare item the Meadow monsters can never drop", function() {
+				var gameConfig = new game.GameConfig()
+				var monsterTypes = gameConfig.getMonsterTypes()
+				var itemTypes = gameConfig.getItemTypes()
+
+				var hasRareDrop = function( typeKey ) {
+					for ( var drop in monsterTypes[ typeKey ].drops ) {
+						if ( itemTypes[ drop.item ].rarity == "rare" ) {
+							return true
+						}
+					}
+					return false
+				}
+
+				expect( hasRareDrop( "boar" ) ).toBeFalse()
+				expect( hasRareDrop( "wolf" ) ).toBeFalse()
+				expect( hasRareDrop( "alphaBoar" ) ).toBeTrue()
+				expect( hasRareDrop( "direWolf" ) ).toBeTrue()
+			} )
+
 			it( "formats the shopkeeper NPC into the wire shape npcSnapshot() sends to clients", function() {
 				var gameConfig = new game.GameConfig()
 				var snapshot = gameConfig.npcSnapshot()

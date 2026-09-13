@@ -12,6 +12,7 @@ import { createChat } from "./chat.js";
 import { createInventory } from "./inventory.js";
 import { createEquipment } from "./equipment.js";
 import { createShop } from "./shop.js";
+import { applyEquipmentVisual } from "./equipVisual.js";
 import { createNpcRegistry, updateNpcAnimations, getNearestNpcDistance } from "./npc.js";
 import { createZoneBanner } from "./zone.js";
 import { loadModels } from "./models.js";
@@ -56,7 +57,8 @@ async function main() {
   const chat = createChat((text) => network.sendChat(text));
   const inventory = createInventory(
     (itemKey) => network.sendUseItem(itemKey),
-    (itemKey) => network.sendEquipItem(itemKey)
+    (itemKey) => network.sendEquipItem(itemKey),
+    (itemKey) => network.sendSellItem(itemKey)
   );
   const equipment = createEquipment((slot) => network.sendUnequipItem(slot));
   const shop = createShop((itemKey) => network.sendBuyItem(itemKey));
@@ -70,7 +72,10 @@ async function main() {
     },
     onChat: chat.addLine,
     onInventory: inventory.setItems,
-    onEquipment: equipment.setSlots,
+    onEquipment: (slots) => {
+      equipment.setSlots(slots);
+      applyEquipmentVisual(player, slots);
+    },
     onShopCatalog: shop.setCatalog,
     onZones: zoneBanner.setZones,
     onKicked: () => {
@@ -117,7 +122,9 @@ async function main() {
     updateMonsterAnimations(monsterRegistry, delta);
     updateMonsterPositions(monsterRegistry, delta);
     updateNpcAnimations(npcRegistry, delta);
-    shop.setInRange(getNearestNpcDistance(player, npcRegistry) <= CLIENT_SHOP_RANGE);
+    const nearShop = getNearestNpcDistance(player, npcRegistry) <= CLIENT_SHOP_RANGE;
+    shop.setInRange(nearShop);
+    inventory.setCanSell(nearShop);
     shop.setGold(player.gold);
     zoneBanner.update(player);
 

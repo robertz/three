@@ -509,6 +509,73 @@ messages the same way the real client always does (unconditionally, even
 at rest) and confirming the first client's rendered remote mesh reports
 `currentAnim === "walk"` while it's actually moving.
 
+Milestone 30 (done): zone-appropriate loot, part 1 of items/progression
+(abilities/talents are a deliberate follow-up, not started). The two
+Ashen Highlands monsters (Alpha Boar, Dire Wolf) used to drop the exact
+same low-tier items as their weak Meadow counterparts — no reward for the
+harder zone beyond raw XP/gold. Added 4 "rare" tier-2 items (`steelSword`,
+`ironHelmet`, `plateArmor`, `ashenAmulet`), roughly double their tier-1
+counterpart's bonus, one per equip slot — obtainable only as Highlands
+monster drops, never added to `SHOP_CATALOG`. Each monster type's single
+`dropItem`/`dropChance` became a `drops` array of independently-rolled
+`{item, chance}` pairs, so a kill can now yield zero, one, or several
+items; Alpha Boar and Dire Wolf each get a 12% shot at their zone-exclusive
+rares on top of their existing common drop. Every item got a `rarity`
+field, rendered client-side as a color (common white, rare blue `#4a9eff`
+— deliberately distinct from the UI's own gold chrome accent). No new
+level-gating mechanic to equip a rare item — the zone/monster difficulty
+itself is the progression gate. Verified via 4 new GameConfigSpec cases
+(every item has a valid rarity, every slot has a rare counterpart, no rare
+ever leaks into the shop catalog, every monster's drop table references
+real items) and a new MonsterServiceSpec case that kills an Alpha Boar 200
+times and asserts a rare eventually drops independent of the common roll;
+also verified live by grinding all 10 spawned Highlands monsters in a
+browser session, getting a real Ashen Amulet drop, confirming it rendered
+blue in the inventory panel, equipping it for the correct +6 attack/+20 HP
+bump, and confirming the shop panel still lists only the 5 common items.
+
+Milestone 31 (done): items/progression pass 1b — wire up remaining items.
+Two gaps the user flagged after Milestone 30: equipping gear was stat-only
+(nothing changed on the character model), and materials/unwanted gear
+(Wolf Fang, a duplicate common item) could be picked up but never spent.
+- **Visual equipment**: new `client/src/equipVisual.js`, called from
+  `main.js`'s `onEquipment` handler for the local player only (the server
+  never broadcasts other players' equipment, so remotes still show no
+  gear — unchanged). Weapon: a small procedural placeholder prop (box
+  blade + cylinder hilt) parented to the Knight rig's hand-socket bone,
+  tinted common gray / rare blue — same reskin-not-new-art approach as
+  the Alpha Boar/Dire Wolf tinted reskins. Helmet: the Knight model
+  already ships its helmet as a separate toggleable mesh
+  (`Knight_Helmet`/`Knight_HelmetVisor`) alongside the head/body/arms/
+  legs — equipping any helmet item just toggles it visible and tints it,
+  zero new assets. Chest: tints the `Knight_Body` mesh the same way,
+  restoring its cached original color on unequip. Trinket: intentionally
+  no visual — no natural attachment point on this rig, and real WoW
+  doesn't render trinkets on the character either.
+  **Bug caught during verification**: the plan assumed the glTF's own
+  bone name `handslot.r`, but `GLTFLoader` sanitizes node names (strips
+  `.`), so it actually loads as `handslotr` — `getObjectByName("handslot.r")`
+  silently found nothing and the weapon prop was never created. Caught by
+  checking `player.userData.weaponProp` directly in the browser console
+  rather than trusting a screenshot alone (the game's own camera never
+  lets you see your character's side/hand anyway — `camera.js`'s follow
+  offset is fixed directly behind, so even a real player can't visually
+  self-check this; programmatic inspection was the only reliable check).
+- **Sell to vendor**: every item type gained an explicit `sellPrice`
+  (authored separately from `price`, since materials/rares are
+  deliberately priced 0 — not purchasable — but still worth something
+  sold back). `PlayerService.handleSellItem()` mirrors `handleBuyItem()`'s
+  range-gate pattern inverted; client gained a `Sell` action per
+  inventory row, shown only within shop range via the same
+  `getNearestNpcDistance` check the shop panel already used (now feeds
+  both panels). Verified live: sold Wolf Fang near Gilda, gold increased
+  by the exact sell price and the item decremented; walked away and
+  confirmed the Sell action disappears.
+- TestBox: `GameConfigSpec` gained a "every item has a positive sellPrice"
+  case; `PlayerServiceSpec` gained three `handleSellItem` cases mirroring
+  the existing buy coverage (out of range, not owned, succeeds). 56/56
+  specs passing.
+
 Not yet wired up: matching the new fantasy theme in the chat/inventory
 panels and login/character-select-adjacent screens (login itself still uses
 the original plain styling), and re-selecting a character without

@@ -1,5 +1,8 @@
-export function createInventory(sendUseItem, sendEquipItem) {
+const RARITY_COLOR = { common: "#fff", rare: "#4a9eff" };
+
+export function createInventory(sendUseItem, sendEquipItem, sendSellItem) {
   let items = [];
+  let canSell = false;
 
   const panel = document.createElement("div");
   panel.style.cssText =
@@ -16,10 +19,11 @@ export function createInventory(sendUseItem, sendEquipItem) {
       .map(
         (item, i) => `
         <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;" data-index="${i}">
-          <span>${item.name} x${item.quantity}</span>
+          <span><span style="color:${RARITY_COLOR[item.rarity] ?? RARITY_COLOR.common};">${item.name}</span> x${item.quantity}</span>
           <span>
             ${item.usable ? '<span class="inv-action" data-action="use" style="color:#4ea3d9;cursor:pointer;margin-left:6px;">Use</span>' : ""}
             ${item.equipSlot ? '<span class="inv-action" data-action="equip" style="color:#d4af37;cursor:pointer;margin-left:6px;">Equip</span>' : ""}
+            ${item.sellPrice > 0 && canSell ? '<span class="inv-action" data-action="sell" style="color:#8a8a8a;cursor:pointer;margin-left:6px;">Sell</span>' : ""}
           </span>
         </div>`
       )
@@ -34,6 +38,7 @@ export function createInventory(sendUseItem, sendEquipItem) {
       el.addEventListener("click", () => {
         if (action === "use") sendUseItem(item.key);
         if (action === "equip") sendEquipItem(item.key);
+        if (action === "sell") sendSellItem(item.key);
       });
     });
   }
@@ -50,6 +55,11 @@ export function createInventory(sendUseItem, sendEquipItem) {
   return {
     setItems(newItems) {
       items = newItems;
+      render();
+    },
+    setCanSell(value) {
+      if (value === canSell) return;
+      canSell = value;
       render();
     },
   };

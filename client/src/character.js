@@ -17,6 +17,11 @@ export function createCharacterMesh() {
   // movement vector) — no inner-model flip needed.
   group.add(scene);
 
+  // equipVisual.js tints this mesh for a "chest armor" look and needs the
+  // untinted color to restore on unequip.
+  const body = group.getObjectByName("Knight_Body");
+  if (body) body.userData.baseColor = body.material.color.clone();
+
   group.mixer = new THREE.AnimationMixer(scene);
   group.actions = {
     idle: group.mixer.clipAction(findAnimation("rig_medium_general", "Idle_A")),

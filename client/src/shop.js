@@ -1,5 +1,7 @@
 import { injectStyles, GOLD } from "./hud.js";
 
+const RARITY_COLOR = { common: "#fff", rare: "#4a9eff" };
+
 export function createShop(sendBuyItem) {
   injectStyles();
 
@@ -26,7 +28,7 @@ export function createShop(sendBuyItem) {
         const affordable = gold >= item.price;
         return `
         <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:12px;">
-          <span>${item.name}</span>
+          <span style="color:${RARITY_COLOR[item.rarity] ?? RARITY_COLOR.common};">${item.name}</span>
           <span style="display:flex;align-items:center;gap:8px;">
             <span><span class="wow-gold-coin"></span>${item.price}</span>
             <span class="shop-buy" data-key="${item.key}" style="color:${affordable ? GOLD : "#555"};cursor:${affordable ? "pointer" : "default"};">Buy</span>

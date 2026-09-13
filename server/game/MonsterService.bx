@@ -47,7 +47,7 @@ class {
 			aggressive: type.aggressive, aggroRadius: type.aggroRadius,
 			attackRange: type.attackRange, attackCooldown: type.attackCooldown,
 			speed: type.speed, baseY: type.baseY,
-			dropItem: type.dropItem, dropChance: type.dropChance,
+			drops: type.drops,
 			homeX: home.x, homeZ: home.z,
 			wanderTargetX: home.x, wanderTargetZ: home.z, wanderTimer: 0,
 			attackTimer: 0, state: "wander", targetPlayerId: "",
@@ -125,8 +125,12 @@ class {
 			variables.playerService.addGold( playerId, m.goldMin + int( rand() * ( m.goldMax - m.goldMin + 1 ) ) )
 			variables.playerService.sendStats( playerId )
 
-			if ( rand() < m.dropChance ) {
-				variables.playerService.dropItem( playerId, m.dropItem )
+			// Each possible drop is rolled independently — a kill can grant
+			// zero, one, or (rarely) several of a monster's possible items.
+			for ( var drop in m.drops ) {
+				if ( rand() < drop.chance ) {
+					variables.playerService.dropItem( playerId, drop.item )
+				}
 			}
 
 			variables.playerService.persist( playerId )

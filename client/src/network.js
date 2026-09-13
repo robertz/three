@@ -58,6 +58,11 @@ export function connectNetwork(
         state.ws.send(JSON.stringify({ type: "buyItem", itemKey }));
       }
     },
+    sendSellItem(itemKey) {
+      if (state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({ type: "sellItem", itemKey }));
+      }
+    },
   };
   const ws = new WebSocket(WS_URL);
   state.ws = ws;

@@ -28,28 +28,37 @@ class {
 		// WoW's outdoor respawns: common low-level critters are back in well
 		// under a minute so questing/farming doesn't stall, tougher mobs take
 		// noticeably longer.
+		// Each type's "drops" is a list of independently-rolled {item, chance}
+		// pairs (not mutually exclusive) — a kill can grant zero, one, or
+		// several of them. Meadow mobs only ever roll their one low-tier
+		// item; the Highlands pair also get a shot at a zone-exclusive rare
+		// upgrade for one of the player's equipment slots (never sold in the
+		// shop — see ITEM_TYPES/SHOP_CATALOG below), the actual reward for
+		// venturing past the Meadow rather than just more of the same loot.
 		variables.monsterTypes = {
 			boar: {
 				name: "Boar", level: 1, hp: 30, damage: 0, xpReward: 10, goldMin: 5, goldMax: 15,
 				aggressive: false, aggroRadius: 0, attackRange: 1.2, attackCooldown: 1.5, speed: 1.2, baseY: 0.6,
-				dropItem: "apple", dropChance: 0.3, respawnDelay: 30
+				drops: [ { item: "apple", chance: 0.3 } ], respawnDelay: 30
 			},
 			wolf: {
 				name: "Wolf", level: 2, hp: 50, damage: 8, xpReward: 25, goldMin: 15, goldMax: 30,
 				aggressive: true, aggroRadius: 8, attackRange: 1.6, attackCooldown: 1.5, speed: 2.6, baseY: 0.5,
-				dropItem: "wolfFang", dropChance: 0.4, respawnDelay: 45
+				drops: [ { item: "wolfFang", chance: 0.4 } ], respawnDelay: 45
 			},
 			// Higher-level reskins of the same two models (see monsters.js's TINT map)
 			// rather than new art — they only spawn in the Ashen Highlands zone.
 			alphaBoar: {
 				name: "Alpha Boar", level: 5, hp: 90, damage: 14, xpReward: 55, goldMin: 25, goldMax: 45,
 				aggressive: true, aggroRadius: 7, attackRange: 1.4, attackCooldown: 1.3, speed: 1.8, baseY: 0.6,
-				dropItem: "apple", dropChance: 0.4, respawnDelay: 90
+				drops: [ { item: "apple", chance: 0.4 }, { item: "steelSword", chance: 0.12 }, { item: "ironHelmet", chance: 0.12 } ],
+				respawnDelay: 90
 			},
 			direWolf: {
 				name: "Dire Wolf", level: 7, hp: 140, damage: 20, xpReward: 90, goldMin: 40, goldMax: 70,
 				aggressive: true, aggroRadius: 10, attackRange: 1.8, attackCooldown: 1.2, speed: 3.2, baseY: 0.5,
-				dropItem: "wolfFang", dropChance: 0.5, respawnDelay: 120
+				drops: [ { item: "wolfFang", chance: 0.5 }, { item: "plateArmor", chance: 0.12 }, { item: "ashenAmulet", chance: 0.12 } ],
+				respawnDelay: 120
 			}
 		}
 
@@ -62,13 +71,26 @@ class {
 			{ key: "highlands", name: "Ashen Highlands", minRadius: 45, maxRadius: variables.worldBounds * 0.8, spawns: { alphaBoar: 5, direWolf: 5 } }
 		]
 
+		// rarity is purely a client-side display hint (color-codes the item
+		// name) — it has no gameplay effect on its own, the actual power
+		// difference is just the bonus* fields being bigger.
+		// sellPrice is authored separately from price (not a % of it) since
+		// materials and rares are deliberately priced 0 — not purchasable —
+		// but should still be worth something when sold back to Gilda.
 		variables.itemTypes = {
-			apple:         { name: "Apple",          usable: true,  healAmount: 20, equipSlot: "",        bonusAttackDamage: 0, bonusMaxHp: 0,  price: 5 },
-			wolfFang:      { name: "Wolf Fang",      usable: false, healAmount: 0,  equipSlot: "",        bonusAttackDamage: 0, bonusMaxHp: 0,  price: 0 },
-			ironSword:     { name: "Iron Sword",     usable: false, healAmount: 0,  equipSlot: "weapon",  bonusAttackDamage: 8, bonusMaxHp: 0,  price: 50 },
-			leatherHelmet: { name: "Leather Helmet", usable: false, healAmount: 0,  equipSlot: "helmet",  bonusAttackDamage: 0, bonusMaxHp: 15, price: 30 },
-			chainmailVest: { name: "Chainmail Vest", usable: false, healAmount: 0,  equipSlot: "chest",   bonusAttackDamage: 0, bonusMaxHp: 30, price: 60 },
-			luckyCharm:    { name: "Lucky Charm",    usable: false, healAmount: 0,  equipSlot: "trinket", bonusAttackDamage: 3, bonusMaxHp: 10, price: 40 }
+			apple:         { name: "Apple",          usable: true,  healAmount: 20, equipSlot: "",        bonusAttackDamage: 0,  bonusMaxHp: 0,  price: 5,  sellPrice: 2,   rarity: "common" },
+			wolfFang:      { name: "Wolf Fang",      usable: false, healAmount: 0,  equipSlot: "",        bonusAttackDamage: 0,  bonusMaxHp: 0,  price: 0,  sellPrice: 3,   rarity: "common" },
+			ironSword:     { name: "Iron Sword",     usable: false, healAmount: 0,  equipSlot: "weapon",  bonusAttackDamage: 8,  bonusMaxHp: 0,  price: 50, sellPrice: 20,  rarity: "common" },
+			leatherHelmet: { name: "Leather Helmet", usable: false, healAmount: 0,  equipSlot: "helmet",  bonusAttackDamage: 0,  bonusMaxHp: 15, price: 30, sellPrice: 12,  rarity: "common" },
+			chainmailVest: { name: "Chainmail Vest", usable: false, healAmount: 0,  equipSlot: "chest",   bonusAttackDamage: 0,  bonusMaxHp: 30, price: 60, sellPrice: 25,  rarity: "common" },
+			luckyCharm:    { name: "Lucky Charm",    usable: false, healAmount: 0,  equipSlot: "trinket", bonusAttackDamage: 3,  bonusMaxHp: 10, price: 40, sellPrice: 16,  rarity: "common" },
+			// Highlands-exclusive drops (see MONSTER_TYPES above) — deliberately
+			// absent from SHOP_CATALOG below, so the only way to get one is to
+			// farm the tougher zone.
+			steelSword:    { name: "Steel Sword",    usable: false, healAmount: 0,  equipSlot: "weapon",  bonusAttackDamage: 16, bonusMaxHp: 0,  price: 0,  sellPrice: 60,  rarity: "rare" },
+			ironHelmet:    { name: "Iron Helmet",    usable: false, healAmount: 0,  equipSlot: "helmet",  bonusAttackDamage: 0,  bonusMaxHp: 30, price: 0,  sellPrice: 60,  rarity: "rare" },
+			plateArmor:    { name: "Plate Armor",    usable: false, healAmount: 0,  equipSlot: "chest",   bonusAttackDamage: 0,  bonusMaxHp: 55, price: 0,  sellPrice: 100, rarity: "rare" },
+			ashenAmulet:   { name: "Ashen Amulet",   usable: false, healAmount: 0,  equipSlot: "trinket", bonusAttackDamage: 6,  bonusMaxHp: 20, price: 0,  sellPrice: 70,  rarity: "rare" }
 		}
 		variables.equipSlots = [ "weapon", "helmet", "chest", "trinket" ]
 
