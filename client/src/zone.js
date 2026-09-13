@@ -1,6 +1,12 @@
+import * as THREE from "three";
 import { injectStyles, GOLD } from "./hud.js";
+import { zoneColorAt } from "./world.js";
 
 const BANNER_HOLD_MS = 3000;
+// How strongly each zone's ground tint bleeds into the fog/sky color — a
+// full-strength tint would fog the whole screen crimson in Dragon's Maw;
+// this keeps it a mood-setting wash instead of a solid color swap.
+const ATMOSPHERE_STRENGTH = 0.4;
 
 export function createZoneBanner() {
   injectStyles();
@@ -15,6 +21,8 @@ export function createZoneBanner() {
   let zones = [];
   let currentKey = null;
   let hideTimer = null;
+  const baseFog = new THREE.Color(0xcfe6ef);
+  const atmosphere = new THREE.Color();
 
   function zoneAt(distance) {
     return zones.find((zone) => distance >= zone.minRadius && distance < zone.maxRadius) ?? zones[zones.length - 1];
@@ -24,10 +32,20 @@ export function createZoneBanner() {
     setZones(list) {
       zones = list;
     },
-    update(player) {
+    // scene is optional — callers that only care about the banner text
+    // (there are none currently, but keeping this cheap to call without a
+    // scene costs nothing) can omit it.
+    update(player, scene) {
       if (!zones.length) return;
 
       const distance = Math.hypot(player.position.x, player.position.z);
+
+      if (scene) {
+        atmosphere.copy(baseFog).lerp(zoneColorAt(distance, zones), ATMOSPHERE_STRENGTH);
+        scene.fog.color.copy(atmosphere);
+        scene.background.copy(atmosphere);
+      }
+
       const zone = zoneAt(distance);
       if (!zone || zone.key === currentKey) return;
 

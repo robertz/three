@@ -134,6 +134,56 @@ export function injectStyles() {
       letter-spacing: 0.5px;
     }
     .wow-button:hover { background: linear-gradient(180deg, #4a3a1e 0%, #241a0c 100%); }
+
+    .wow-panel-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: ${GOLD};
+      text-align: center;
+      margin-bottom: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(212,175,55,0.35);
+    }
+
+    /* Shared by inventory rows, equipment slots, and the character sheet's
+       gear summary — a square icon tile whose border color carries rarity
+       (set inline per-item, since rarity isn't known until render time). */
+    .wow-slot-icon {
+      width: 30px;
+      height: 30px;
+      border-radius: 5px;
+      background: radial-gradient(circle at 35% 30%, #3a2c18, #14100a 80%);
+      border: 2px solid #6b5a3a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    .wow-slot-icon.empty { opacity: 0.4; border-style: dashed; }
+
+    .wow-item-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 4px;
+      border-radius: 4px;
+    }
+    .wow-item-row:hover { background: rgba(212,175,55,0.08); }
+
+    .wow-action-btn {
+      font-size: 10px;
+      letter-spacing: 0.5px;
+      padding: 2px 7px;
+      border-radius: 3px;
+      border: 1px solid currentColor;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .wow-action-btn:hover { background: rgba(255,255,255,0.12); }
+    .wow-action-btn.disabled { cursor: default; opacity: 0.4; border-color: #555; }
+    .wow-action-btn.disabled:hover { background: none; }
   `;
   document.head.appendChild(style);
 }

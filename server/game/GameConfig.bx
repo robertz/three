@@ -10,7 +10,7 @@ class {
 	function init() {
 		variables.javaMath = createObject( "java", "java.lang.Math" )
 
-		variables.worldBounds = 99
+		variables.worldBounds = 430
 		variables.wanderRadius = 6
 		variables.tickSeconds = 0.2
 		variables.playerRespawnDelay = 3
@@ -22,85 +22,323 @@ class {
 		variables.saveIntervalSeconds = 5
 		variables.chatMaxLength = 200
 
-		// respawnDelay is seconds until a corpse can respawn — actual timing gets
-		// +/-15% jitter (see MonsterService's handleAttack death handling) so a
-		// cleared group doesn't all pop back in lockstep. Modeled on classic
-		// WoW's outdoor respawns: common low-level critters are back in well
-		// under a minute so questing/farming doesn't stall, tougher mobs take
-		// noticeably longer.
-		// Each type's "drops" is a list of independently-rolled {item, chance}
-		// pairs (not mutually exclusive) — a kill can grant zero, one, or
-		// several of them. Meadow mobs only ever roll their one low-tier
-		// item; the Highlands pair also get a shot at a zone-exclusive rare
-		// upgrade for one of the player's equipment slots (never sold in the
-		// shop — see ITEM_TYPES/SHOP_CATALOG below), the actual reward for
-		// venturing past the Meadow rather than just more of the same loot.
-		variables.monsterTypes = {
-			boar: {
-				name: "Boar", level: 1, hp: 30, damage: 0, xpReward: 10, goldMin: 5, goldMax: 15,
-				aggressive: false, aggroRadius: 0, attackRange: 1.2, attackCooldown: 1.5, speed: 1.2, baseY: 0.6,
-				drops: [ { item: "apple", chance: 0.3 } ], respawnDelay: 30
-			},
-			wolf: {
-				name: "Wolf", level: 2, hp: 50, damage: 8, xpReward: 25, goldMin: 15, goldMax: 30,
-				aggressive: true, aggroRadius: 8, attackRange: 1.6, attackCooldown: 1.5, speed: 2.6, baseY: 0.5,
-				drops: [ { item: "wolfFang", chance: 0.4 } ], respawnDelay: 45
-			},
-			// Higher-level reskins of the same two models (see monsters.js's TINT map)
-			// rather than new art — they only spawn in the Ashen Highlands zone.
-			alphaBoar: {
-				name: "Alpha Boar", level: 5, hp: 90, damage: 14, xpReward: 55, goldMin: 25, goldMax: 45,
-				aggressive: true, aggroRadius: 7, attackRange: 1.4, attackCooldown: 1.3, speed: 1.8, baseY: 0.6,
-				drops: [ { item: "apple", chance: 0.4 }, { item: "steelSword", chance: 0.12 }, { item: "ironHelmet", chance: 0.12 } ],
-				respawnDelay: 90
-			},
-			direWolf: {
-				name: "Dire Wolf", level: 7, hp: 140, damage: 20, xpReward: 90, goldMin: 40, goldMax: 70,
-				aggressive: true, aggroRadius: 10, attackRange: 1.8, attackCooldown: 1.2, speed: 3.2, baseY: 0.5,
-				drops: [ { item: "wolfFang", chance: 0.5 }, { item: "plateArmor", chance: 0.12 }, { item: "ashenAmulet", chance: 0.12 } ],
-				respawnDelay: 120
-			}
-		}
+		// How far a monster has to be from EVERY connected player before
+		// MonsterService's tick stops processing it at all (no wander, no
+		// aggro scan, no respawn check) and it drops out of the broadcast
+		// snapshot entirely. With 8 zones spread across a world this size,
+		// most monsters at any moment are nowhere near a player — this
+		// keeps the per-tick cost bounded by what's actually on screen
+		// somewhere instead of the size of the whole world. Comfortably
+		// bigger than any monster's aggroRadius * 1.5 chase leash (the
+		// biggest is 14 * 1.5 = 21, see zone 8 below) so an active chase
+		// never gets frozen mid-leash for going "out of range".
+		variables.monsterVisibilityRadius = 140
 
-		// Zones are just concentric bands of the one continuous world, keyed off
-		// distance from the origin — no separate maps/instances, no loading
-		// screens. Walking outward from spawn (where the shop sits) takes you
-		// from the beginner Meadow into the tougher Highlands.
-		variables.zones = [
-			{ key: "meadow", name: "Sunfield Meadow", minRadius: 0, maxRadius: 45, spawns: { boar: 8, wolf: 4 } },
-			{ key: "highlands", name: "Ashen Highlands", minRadius: 45, maxRadius: variables.worldBounds * 0.8, spawns: { alphaBoar: 5, direWolf: 5 } }
-		]
+		variables.itemTypes = {}
+		variables.monsterTypes = {}
+		variables.zones = []
+		variables.npcs = {}
 
-		// rarity is purely a client-side display hint (color-codes the item
-		// name) — it has no gameplay effect on its own, the actual power
-		// difference is just the bonus* fields being bigger.
-		// sellPrice is authored separately from price (not a % of it) since
-		// materials and rares are deliberately priced 0 — not purchasable —
-		// but should still be worth something when sold back to Gilda.
-		variables.itemTypes = {
-			apple:         { name: "Apple",          usable: true,  healAmount: 20, equipSlot: "",        bonusAttackDamage: 0,  bonusMaxHp: 0,  price: 5,  sellPrice: 2,   rarity: "common" },
-			wolfFang:      { name: "Wolf Fang",      usable: false, healAmount: 0,  equipSlot: "",        bonusAttackDamage: 0,  bonusMaxHp: 0,  price: 0,  sellPrice: 3,   rarity: "common" },
-			ironSword:     { name: "Iron Sword",     usable: false, healAmount: 0,  equipSlot: "weapon",  bonusAttackDamage: 8,  bonusMaxHp: 0,  price: 50, sellPrice: 20,  rarity: "common" },
-			leatherHelmet: { name: "Leather Helmet", usable: false, healAmount: 0,  equipSlot: "helmet",  bonusAttackDamage: 0,  bonusMaxHp: 15, price: 30, sellPrice: 12,  rarity: "common" },
-			chainmailVest: { name: "Chainmail Vest", usable: false, healAmount: 0,  equipSlot: "chest",   bonusAttackDamage: 0,  bonusMaxHp: 30, price: 60, sellPrice: 25,  rarity: "common" },
-			luckyCharm:    { name: "Lucky Charm",    usable: false, healAmount: 0,  equipSlot: "trinket", bonusAttackDamage: 3,  bonusMaxHp: 10, price: 40, sellPrice: 16,  rarity: "common" },
-			// Highlands-exclusive drops (see MONSTER_TYPES above) — deliberately
-			// absent from SHOP_CATALOG below, so the only way to get one is to
-			// farm the tougher zone.
-			steelSword:    { name: "Steel Sword",    usable: false, healAmount: 0,  equipSlot: "weapon",  bonusAttackDamage: 16, bonusMaxHp: 0,  price: 0,  sellPrice: 60,  rarity: "rare" },
-			ironHelmet:    { name: "Iron Helmet",    usable: false, healAmount: 0,  equipSlot: "helmet",  bonusAttackDamage: 0,  bonusMaxHp: 30, price: 0,  sellPrice: 60,  rarity: "rare" },
-			plateArmor:    { name: "Plate Armor",    usable: false, healAmount: 0,  equipSlot: "chest",   bonusAttackDamage: 0,  bonusMaxHp: 55, price: 0,  sellPrice: 100, rarity: "rare" },
-			ashenAmulet:   { name: "Ashen Amulet",   usable: false, healAmount: 0,  equipSlot: "trinket", bonusAttackDamage: 6,  bonusMaxHp: 20, price: 0,  sellPrice: 70,  rarity: "rare" }
-		}
+		_buildApple()
+		_buildWolfFang()
+		_buildMeadow()
+		_buildHighlands()
+		_buildThornwood()
+		_buildFrostspire()
+		_buildCinderWastes()
+		_buildBlightmire()
+		_buildShadowfen()
+		_buildDragonsMaw()
+
 		variables.equipSlots = [ "weapon", "helmet", "chest", "trinket" ]
-
-		variables.npcs = { shopkeeper1: { id: "shopkeeper1", name: "Gilda the Vendor", x: 5, z: 5, rotationY: 0, model: "shopkeeper" } }
 		variables.shopRange = 4
-		variables.shopCatalog = [ "ironSword", "leatherHelmet", "chainmailVest", "luckyCharm", "apple" ]
 
 		_generateWorldLayout()
 
 		return this
+	}
+
+	// ── Shared drops ─────────────────────────────────────────────────────────
+	// Every boar-type across all 8 zones drops the same apple, and every
+	// wolf-type drops the same wolf fang — they're vendor trash/healing,
+	// not part of the zone's gear-progression identity, so there's no
+	// reason for each zone to reinvent one. The gear (below) is what
+	// actually differentiates a zone's reward.
+
+	private function _buildApple() {
+		variables.itemTypes[ "apple" ] = {
+			name: "Apple", usable: true, healAmount: 20, equipSlot: "", bonusAttackDamage: 0, bonusMaxHp: 0,
+			price: 5, sellPrice: 2, rarity: "common"
+		}
+	}
+
+	private function _buildWolfFang() {
+		variables.itemTypes[ "wolfFang" ] = {
+			name: "Wolf Fang", usable: false, healAmount: 0, equipSlot: "", bonusAttackDamage: 0, bonusMaxHp: 0,
+			price: 0, sellPrice: 3, rarity: "common"
+		}
+	}
+
+	// sellPrice formulas for zone-3-and-up gear (zones 1-2 keep their
+	// original hand-set prices unchanged, see below) — not a precise
+	// science, just keeps a purchasable item worth roughly 40% of its
+	// price back, and a rare (never purchasable) worth something
+	// proportional to how strong it is.
+	private function _commonSell( price ) {
+		return round( price * 0.4 )
+	}
+
+	private function _rareSell( bonusAttackDamage, bonusMaxHp ) {
+		return round( ( bonusAttackDamage * 3 ) + ( bonusMaxHp * 1.6 ) )
+	}
+
+	// Adds a zone's two monster types (a passive boar-type and an
+	// aggressive wolf-type), its band of the map, and its merchant — every
+	// _build*() below calls this last with its own numbers. zoneIndex is
+	// 1-based and purely positional (npc placement angle, tier flavor);
+	// it's NOT persisted anywhere a save file/client could depend on it
+	// surviving a reorder.
+	private function _registerZone(
+		zoneIndex, key, name, minRadius, maxRadius, groundTint,
+		boarKey, boarName, boarHp, boarDmg, boarXp, boarGoldMin, boarGoldMax, boarRespawn, boarSpawns, boarDrops,
+		wolfKey, wolfName, wolfHp, wolfDmg, wolfXp, wolfGoldMin, wolfGoldMax, wolfRespawn, wolfSpawns, wolfDrops,
+		wolfAggroRadius, wolfSpeed, wolfAttackRange, wolfAttackCooldown,
+		merchantId, merchantName, shopCatalog
+	) {
+		variables.monsterTypes[ boarKey ] = {
+			name: boarName, level: zoneIndex * 2 - 1, hp: boarHp, damage: boarDmg,
+			xpReward: boarXp, goldMin: boarGoldMin, goldMax: boarGoldMax,
+			aggressive: false, aggroRadius: 0, attackRange: 1.2, attackCooldown: 1.5, speed: 1.2, baseY: 0.6,
+			drops: boarDrops, respawnDelay: boarRespawn
+		}
+
+		variables.monsterTypes[ wolfKey ] = {
+			name: wolfName, level: zoneIndex * 2, hp: wolfHp, damage: wolfDmg,
+			xpReward: wolfXp, goldMin: wolfGoldMin, goldMax: wolfGoldMax,
+			aggressive: true, aggroRadius: wolfAggroRadius, attackRange: wolfAttackRange, attackCooldown: wolfAttackCooldown,
+			speed: wolfSpeed, baseY: 0.5, drops: wolfDrops, respawnDelay: wolfRespawn
+		}
+
+		variables.zones.append( {
+			key: key, name: name, minRadius: minRadius, maxRadius: maxRadius, groundTint: groundTint,
+			spawns: {}
+		} )
+		variables.zones[ variables.zones.len() ].spawns[ boarKey ] = boarSpawns
+		variables.zones[ variables.zones.len() ].spawns[ wolfKey ] = wolfSpawns
+
+		// Merchants ring the origin at a golden-angle spread (~137.5° apart)
+		// so they land at different bearings from spawn instead of all
+		// lining up due north — zone 1 keeps its original literal position
+		// (see _buildMeadow) rather than going through this formula.
+		var midRadius = ( minRadius + maxRadius ) / 2
+		var angle = ( zoneIndex - 1 ) * 2.4
+		var npcX = variables.javaMath.cos( angle ) * midRadius
+		var npcZ = variables.javaMath.sin( angle ) * midRadius
+		variables.npcs[ merchantId ] = {
+			id: merchantId, name: merchantName, x: npcX, z: npcZ,
+			rotationY: variables.javaMath.atan2( -npcX, -npcZ ), model: "shopkeeper",
+			shopCatalog: shopCatalog
+		}
+	}
+
+	// ── Zone 1: Sunfield Meadow (level 1) ───────────────────────────────────
+	// The original two monster types and the original single shop, left
+	// numerically untouched — MonsterServiceSpec's "three hits kill a
+	// boar at attackDamage 10" math depends on boar.hp staying exactly 30.
+
+	private function _buildMeadow() {
+		variables.itemTypes[ "ironSword" ] = { name: "Iron Sword", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 8, bonusMaxHp: 0, price: 50, sellPrice: 20, rarity: "common" }
+		variables.itemTypes[ "leatherHelmet" ] = { name: "Leather Helmet", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 15, price: 30, sellPrice: 12, rarity: "common" }
+		variables.itemTypes[ "chainmailVest" ] = { name: "Chainmail Vest", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 30, price: 60, sellPrice: 25, rarity: "common" }
+		variables.itemTypes[ "luckyCharm" ] = { name: "Lucky Charm", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 3, bonusMaxHp: 10, price: 40, sellPrice: 16, rarity: "common" }
+
+		_registerZone(
+			1, "meadow", "Sunfield Meadow", 0, 40, inputBaseN( "ffffff", 16 ),
+			"boar", "Boar", 30, 0, 10, 5, 15, 30, 8, [ { item: "apple", chance: 0.3 } ],
+			"wolf", "Wolf", 50, 8, 25, 15, 30, 45, 4, [ { item: "wolfFang", chance: 0.4 } ],
+			8, 2.6, 1.6, 1.5,
+			"shopkeeper1", "Gilda the Vendor",
+			[ "ironSword", "leatherHelmet", "chainmailVest", "luckyCharm", "apple" ]
+		)
+	}
+
+	// ── Zone 2: Ashen Highlands (level 5) ───────────────────────────────────
+	// alphaBoar/direWolf are reskins of the Meadow's own pig/wolf models
+	// (see client monsters.js's TINT map) — no new art, just tougher
+	// stats. Rare drops here (steelSword/ironHelmet/plateArmor/ashenAmulet)
+	// and their sell prices are the original hand-set values, unchanged.
+
+	private function _buildHighlands() {
+		variables.itemTypes[ "steelSword" ] = { name: "Steel Sword", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 16, bonusMaxHp: 0, price: 0, sellPrice: 60, rarity: "rare" }
+		variables.itemTypes[ "ironHelmet" ] = { name: "Iron Helmet", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 30, price: 0, sellPrice: 60, rarity: "rare" }
+		variables.itemTypes[ "plateArmor" ] = { name: "Plate Armor", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 55, price: 0, sellPrice: 100, rarity: "rare" }
+		variables.itemTypes[ "ashenAmulet" ] = { name: "Ashen Amulet", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 6, bonusMaxHp: 20, price: 0, sellPrice: 70, rarity: "rare" }
+
+		variables.itemTypes[ "ashenBlade" ] = { name: "Ashen Blade", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 14, bonusMaxHp: 0, price: 130, sellPrice: _commonSell( 130 ), rarity: "common" }
+		variables.itemTypes[ "ashenCap" ] = { name: "Ashen Cap", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 26, price: 90, sellPrice: _commonSell( 90 ), rarity: "common" }
+		variables.itemTypes[ "ashenHauberk" ] = { name: "Ashen Hauberk", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 48, price: 160, sellPrice: _commonSell( 160 ), rarity: "common" }
+		variables.itemTypes[ "ashenCharm" ] = { name: "Ashen Charm", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 5, bonusMaxHp: 18, price: 110, sellPrice: _commonSell( 110 ), rarity: "common" }
+
+		_registerZone(
+			2, "highlands", "Ashen Highlands", 40, 75, inputBaseN( "aea27f", 16 ),
+			"alphaBoar", "Alpha Boar", 90, 14, 55, 25, 45, 90, 5,
+			[ { item: "apple", chance: 0.4 }, { item: "steelSword", chance: 0.12 }, { item: "ironHelmet", chance: 0.12 } ],
+			"direWolf", "Dire Wolf", 140, 20, 90, 40, 70, 120, 5,
+			[ { item: "wolfFang", chance: 0.5 }, { item: "plateArmor", chance: 0.12 }, { item: "ashenAmulet", chance: 0.12 } ],
+			10, 3.2, 1.8, 1.2,
+			"merchant_highlands", "Borin Ashcart",
+			[ "ashenBlade", "ashenCap", "ashenHauberk", "ashenCharm", "apple" ]
+		)
+	}
+
+	// ── Zone 3: Thornwood Reach (level 10) ──────────────────────────────────
+
+	private function _buildThornwood() {
+		variables.itemTypes[ "thornwoodBlade" ] = { name: "Thornwood Blade", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 24, bonusMaxHp: 0, price: 0, sellPrice: _rareSell( 24, 0 ), rarity: "rare" }
+		variables.itemTypes[ "bramblewoodCap" ] = { name: "Bramblewood Cap", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 45, price: 0, sellPrice: _rareSell( 0, 45 ), rarity: "rare" }
+		variables.itemTypes[ "mosswovenVest" ] = { name: "Mosswoven Vest", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 80, price: 0, sellPrice: _rareSell( 0, 80 ), rarity: "rare" }
+		variables.itemTypes[ "thornTalisman" ] = { name: "Thorn Talisman", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 9, bonusMaxHp: 30, price: 0, sellPrice: _rareSell( 9, 30 ), rarity: "rare" }
+
+		variables.itemTypes[ "thornwoodSword" ] = { name: "Thornwood Sword", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 20, bonusMaxHp: 0, price: 220, sellPrice: _commonSell( 220 ), rarity: "common" }
+		variables.itemTypes[ "thornwoodCap" ] = { name: "Thornwood Cap", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 38, price: 150, sellPrice: _commonSell( 150 ), rarity: "common" }
+		variables.itemTypes[ "thornwoodJerkin" ] = { name: "Thornwood Jerkin", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 70, price: 260, sellPrice: _commonSell( 260 ), rarity: "common" }
+		variables.itemTypes[ "thornwoodBand" ] = { name: "Thornwood Band", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 8, bonusMaxHp: 26, price: 180, sellPrice: _commonSell( 180 ), rarity: "common" }
+
+		_registerZone(
+			3, "thornwood", "Thornwood Reach", 75, 115, inputBaseN( "5c6b3a", 16 ),
+			"thornBoar", "Thorn Boar", 160, 22, 140, 55, 90, 150, 7,
+			[ { item: "apple", chance: 0.4 }, { item: "thornwoodBlade", chance: 0.12 }, { item: "bramblewoodCap", chance: 0.12 } ],
+			"brambleWolf", "Bramble Wolf", 230, 30, 190, 80, 130, 180, 6,
+			[ { item: "wolfFang", chance: 0.5 }, { item: "mosswovenVest", chance: 0.12 }, { item: "thornTalisman", chance: 0.12 } ],
+			10, 3.2, 1.8, 1.2,
+			"merchant_thornwood", "Ferryn Thorne",
+			[ "thornwoodSword", "thornwoodCap", "thornwoodJerkin", "thornwoodBand", "apple" ]
+		)
+	}
+
+	// ── Zone 4: Frostspire Tundra (level 15) ────────────────────────────────
+
+	private function _buildFrostspire() {
+		variables.itemTypes[ "frostspireEdge" ] = { name: "Frostspire Edge", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 34, bonusMaxHp: 0, price: 0, sellPrice: _rareSell( 34, 0 ), rarity: "rare" }
+		variables.itemTypes[ "rimeHelm" ] = { name: "Rime Helm", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 65, price: 0, sellPrice: _rareSell( 0, 65 ), rarity: "rare" }
+		variables.itemTypes[ "glacierPlate" ] = { name: "Glacier Plate", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 115, price: 0, sellPrice: _rareSell( 0, 115 ), rarity: "rare" }
+		variables.itemTypes[ "frozenHeartCharm" ] = { name: "Frozen Heart Charm", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 13, bonusMaxHp: 45, price: 0, sellPrice: _rareSell( 13, 45 ), rarity: "rare" }
+
+		variables.itemTypes[ "frostspireBlade" ] = { name: "Frostspire Blade", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 28, bonusMaxHp: 0, price: 340, sellPrice: _commonSell( 340 ), rarity: "common" }
+		variables.itemTypes[ "frostspireHood" ] = { name: "Frostspire Hood", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 54, price: 230, sellPrice: _commonSell( 230 ), rarity: "common" }
+		variables.itemTypes[ "frostspireCoat" ] = { name: "Frostspire Coat", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 100, price: 400, sellPrice: _commonSell( 400 ), rarity: "common" }
+		variables.itemTypes[ "frostspireBand" ] = { name: "Frostspire Band", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 11, bonusMaxHp: 38, price: 280, sellPrice: _commonSell( 280 ), rarity: "common" }
+
+		_registerZone(
+			4, "frostspire", "Frostspire Tundra", 115, 160, inputBaseN( "cfe4ea", 16 ),
+			"frostBoar", "Frost Boar", 260, 32, 260, 100, 150, 180, 7,
+			[ { item: "apple", chance: 0.4 }, { item: "frostspireEdge", chance: 0.12 }, { item: "rimeHelm", chance: 0.12 } ],
+			"frostWolf", "Frost Wolf", 350, 42, 340, 140, 210, 220, 6,
+			[ { item: "wolfFang", chance: 0.5 }, { item: "glacierPlate", chance: 0.12 }, { item: "frozenHeartCharm", chance: 0.12 } ],
+			11, 3.4, 1.8, 1.2,
+			"merchant_frostspire", "Skald Ironfrost",
+			[ "frostspireBlade", "frostspireHood", "frostspireCoat", "frostspireBand", "apple" ]
+		)
+	}
+
+	// ── Zone 5: Cinder Wastes (level 20) ────────────────────────────────────
+
+	private function _buildCinderWastes() {
+		variables.itemTypes[ "cinderforgeAxe" ] = { name: "Cinderforge Axe", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 48, bonusMaxHp: 0, price: 0, sellPrice: _rareSell( 48, 0 ), rarity: "rare" }
+		variables.itemTypes[ "magmaCrown" ] = { name: "Magma Crown", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 90, price: 0, sellPrice: _rareSell( 0, 90 ), rarity: "rare" }
+		variables.itemTypes[ "ashscaleArmor" ] = { name: "Ashscale Armor", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 160, price: 0, sellPrice: _rareSell( 0, 160 ), rarity: "rare" }
+		variables.itemTypes[ "emberIdol" ] = { name: "Ember Idol", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 18, bonusMaxHp: 60, price: 0, sellPrice: _rareSell( 18, 60 ), rarity: "rare" }
+
+		variables.itemTypes[ "cinderforgedBlade" ] = { name: "Cinderforged Blade", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 40, bonusMaxHp: 0, price: 510, sellPrice: _commonSell( 510 ), rarity: "common" }
+		variables.itemTypes[ "cinderCap" ] = { name: "Cinder Cap", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 76, price: 340, sellPrice: _commonSell( 340 ), rarity: "common" }
+		variables.itemTypes[ "cinderplateVest" ] = { name: "Cinderplate Vest", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 140, price: 600, sellPrice: _commonSell( 600 ), rarity: "common" }
+		variables.itemTypes[ "cinderBand" ] = { name: "Cinder Band", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 15, bonusMaxHp: 54, price: 420, sellPrice: _commonSell( 420 ), rarity: "common" }
+
+		_registerZone(
+			5, "cinderwastes", "Cinder Wastes", 160, 210, inputBaseN( "b5601f", 16 ),
+			"cinderBoar", "Cinder Boar", 380, 44, 420, 170, 240, 210, 6,
+			[ { item: "apple", chance: 0.4 }, { item: "cinderforgeAxe", chance: 0.12 }, { item: "magmaCrown", chance: 0.12 } ],
+			"emberWolf", "Ember Wolf", 490, 56, 540, 220, 320, 260, 6,
+			[ { item: "wolfFang", chance: 0.5 }, { item: "ashscaleArmor", chance: 0.12 }, { item: "emberIdol", chance: 0.12 } ],
+			12, 3.4, 1.8, 1.2,
+			"merchant_cinderwastes", "Ashra Emberhand",
+			[ "cinderforgedBlade", "cinderCap", "cinderplateVest", "cinderBand", "apple" ]
+		)
+	}
+
+	// ── Zone 6: Blightmire Swamp (level 25) ─────────────────────────────────
+
+	private function _buildBlightmire() {
+		variables.itemTypes[ "blightmireCleaver" ] = { name: "Blightmire Cleaver", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 66, bonusMaxHp: 0, price: 0, sellPrice: _rareSell( 66, 0 ), rarity: "rare" }
+		variables.itemTypes[ "mireHood" ] = { name: "Mire Hood", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 125, price: 0, sellPrice: _rareSell( 0, 125 ), rarity: "rare" }
+		variables.itemTypes[ "rotcallerHide" ] = { name: "Rotcaller Hide", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 220, price: 0, sellPrice: _rareSell( 0, 220 ), rarity: "rare" }
+		variables.itemTypes[ "swampwardenSigil" ] = { name: "Swampwarden Sigil", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 25, bonusMaxHp: 85, price: 0, sellPrice: _rareSell( 25, 85 ), rarity: "rare" }
+
+		variables.itemTypes[ "blightsteelBlade" ] = { name: "Blightsteel Blade", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 56, bonusMaxHp: 0, price: 740, sellPrice: _commonSell( 740 ), rarity: "common" }
+		variables.itemTypes[ "mireCap" ] = { name: "Mire Cap", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 106, price: 500, sellPrice: _commonSell( 500 ), rarity: "common" }
+		variables.itemTypes[ "blightHideVest" ] = { name: "Blight Hide Vest", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 195, price: 870, sellPrice: _commonSell( 870 ), rarity: "common" }
+		variables.itemTypes[ "blightmireBand" ] = { name: "Blightmire Band", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 21, bonusMaxHp: 75, price: 610, sellPrice: _commonSell( 610 ), rarity: "common" }
+
+		_registerZone(
+			6, "blightmire", "Blightmire Swamp", 210, 265, inputBaseN( "7a8a3f", 16 ),
+			"bogBoar", "Bog Boar", 520, 58, 650, 260, 360, 240, 6,
+			[ { item: "apple", chance: 0.4 }, { item: "blightmireCleaver", chance: 0.12 }, { item: "mireHood", chance: 0.12 } ],
+			"blightWolf", "Blight Wolf", 650, 72, 820, 330, 460, 300, 6,
+			[ { item: "wolfFang", chance: 0.5 }, { item: "rotcallerHide", chance: 0.12 }, { item: "swampwardenSigil", chance: 0.12 } ],
+			12, 3.6, 1.8, 1.2,
+			"merchant_blightmire", "Old Muck",
+			[ "blightsteelBlade", "mireCap", "blightHideVest", "blightmireBand", "apple" ]
+		)
+	}
+
+	// ── Zone 7: Shadowfen (level 30) ────────────────────────────────────────
+
+	private function _buildShadowfen() {
+		variables.itemTypes[ "shadowfenReaper" ] = { name: "Shadowfen Reaper", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 90, bonusMaxHp: 0, price: 0, sellPrice: _rareSell( 90, 0 ), rarity: "rare" }
+		variables.itemTypes[ "duskveilHelm" ] = { name: "Duskveil Helm", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 170, price: 0, sellPrice: _rareSell( 0, 170 ), rarity: "rare" }
+		variables.itemTypes[ "umbralPlate" ] = { name: "Umbral Plate", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 300, price: 0, sellPrice: _rareSell( 0, 300 ), rarity: "rare" }
+		variables.itemTypes[ "wraithboundCharm" ] = { name: "Wraithbound Charm", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 34, bonusMaxHp: 115, price: 0, sellPrice: _rareSell( 34, 115 ), rarity: "rare" }
+
+		variables.itemTypes[ "shadowsteelBlade" ] = { name: "Shadowsteel Blade", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 78, bonusMaxHp: 0, price: 1050, sellPrice: _commonSell( 1050 ), rarity: "common" }
+		variables.itemTypes[ "duskCap" ] = { name: "Dusk Cap", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 146, price: 710, sellPrice: _commonSell( 710 ), rarity: "common" }
+		variables.itemTypes[ "shadowPlate" ] = { name: "Shadow Plate", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 270, price: 1240, sellPrice: _commonSell( 1240 ), rarity: "common" }
+		variables.itemTypes[ "shadowBand" ] = { name: "Shadow Band", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 29, bonusMaxHp: 103, price: 860, sellPrice: _commonSell( 860 ), rarity: "common" }
+
+		_registerZone(
+			7, "shadowfen", "Shadowfen", 265, 325, inputBaseN( "5b4a73", 16 ),
+			"shadowBoar", "Shadow Boar", 680, 74, 950, 370, 500, 270, 6,
+			[ { item: "apple", chance: 0.4 }, { item: "shadowfenReaper", chance: 0.12 }, { item: "duskveilHelm", chance: 0.12 } ],
+			"nightfangWolf", "Nightfang Wolf", 830, 90, 1180, 460, 620, 340, 5,
+			[ { item: "wolfFang", chance: 0.5 }, { item: "umbralPlate", chance: 0.12 }, { item: "wraithboundCharm", chance: 0.12 } ],
+			13, 3.6, 1.8, 1.2,
+			"merchant_shadowfen", "Vesk the Pale",
+			[ "shadowsteelBlade", "duskCap", "shadowPlate", "shadowBand", "apple" ]
+		)
+	}
+
+	// ── Zone 8: Dragon's Maw (level 35) ─────────────────────────────────────
+
+	private function _buildDragonsMaw() {
+		variables.itemTypes[ "dragonsMawFang" ] = { name: "Dragon's Maw Fang", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 120, bonusMaxHp: 0, price: 0, sellPrice: _rareSell( 120, 0 ), rarity: "rare" }
+		variables.itemTypes[ "wyrmscaleCrown" ] = { name: "Wyrmscale Crown", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 225, price: 0, sellPrice: _rareSell( 0, 225 ), rarity: "rare" }
+		variables.itemTypes[ "drakehidePlate" ] = { name: "Drakehide Plate", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 400, price: 0, sellPrice: _rareSell( 0, 400 ), rarity: "rare" }
+		variables.itemTypes[ "emberheartRelic" ] = { name: "Emberheart Relic", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 45, bonusMaxHp: 155, price: 0, sellPrice: _rareSell( 45, 155 ), rarity: "rare" }
+
+		variables.itemTypes[ "dragonforgedBlade" ] = { name: "Dragonforged Blade", usable: false, healAmount: 0, equipSlot: "weapon", bonusAttackDamage: 105, bonusMaxHp: 0, price: 1500, sellPrice: _commonSell( 1500 ), rarity: "common" }
+		variables.itemTypes[ "drakeCap" ] = { name: "Drake Cap", usable: false, healAmount: 0, equipSlot: "helmet", bonusAttackDamage: 0, bonusMaxHp: 197, price: 1010, sellPrice: _commonSell( 1010 ), rarity: "common" }
+		variables.itemTypes[ "drakeforgedPlate" ] = { name: "Drakeforged Plate", usable: false, healAmount: 0, equipSlot: "chest", bonusAttackDamage: 0, bonusMaxHp: 365, price: 1770, sellPrice: _commonSell( 1770 ), rarity: "common" }
+		variables.itemTypes[ "wyrmbornBand" ] = { name: "Wyrmborn Band", usable: false, healAmount: 0, equipSlot: "trinket", bonusAttackDamage: 39, bonusMaxHp: 139, price: 1220, sellPrice: _commonSell( 1220 ), rarity: "common" }
+
+		_registerZone(
+			8, "dragonsmaw", "Dragon's Maw", 325, 390, inputBaseN( "6b1f1f", 16 ),
+			"mawTusker", "Maw Tusker", 870, 92, 1350, 500, 680, 300, 5,
+			[ { item: "apple", chance: 0.4 }, { item: "dragonsMawFang", chance: 0.12 }, { item: "wyrmscaleCrown", chance: 0.12 } ],
+			"wyrmfangStalker", "Wyrmfang Stalker", 1050, 112, 1650, 620, 820, 380, 5,
+			[ { item: "wolfFang", chance: 0.5 }, { item: "drakehidePlate", chance: 0.12 }, { item: "emberheartRelic", chance: 0.12 } ],
+			14, 3.8, 1.8, 1.2,
+			"merchant_dragonsmaw", "Kaeth Dragonbane",
+			[ "dragonforgedBlade", "drakeCap", "drakeforgedPlate", "wyrmbornBand", "apple" ]
+		)
 	}
 
 	// Generated once at startup and broadcast to every client in "welcome" so
@@ -112,10 +350,10 @@ class {
 	private function _generateWorldLayout() {
 		var propTypes = [ "tree_default", "tree_pineRoundA", "tree_oak", "tree_fat", "rock_largeA", "rock_largeC", "stump_round", "plant_bushDetailed" ]
 		var mountainTypes = [ "rock_largeA", "rock_largeC" ]
-		var propCount = 25
-		var mountainCount = 36
-		var propScatterRadius = 90
-		var mountainHorizonRadius = 150
+		var propCount = 320
+		var mountainCount = 84
+		var propScatterRadius = variables.zones[ variables.zones.len() ].maxRadius
+		var mountainHorizonRadius = variables.worldBounds + 40
 
 		variables.props = []
 		for ( var i = 1; i <= propCount; i++ ) {
@@ -147,7 +385,6 @@ class {
 	function getEquipSlots() { return variables.equipSlots }
 	function getNpcs() { return variables.npcs }
 	function getShopRange() { return variables.shopRange }
-	function getShopCatalog() { return variables.shopCatalog }
 	function getProps() { return variables.props }
 	function getMountains() { return variables.mountains }
 
@@ -162,12 +399,24 @@ class {
 	function getSkillMultiplier() { return variables.skillMultiplier }
 	function getSaveIntervalSeconds() { return variables.saveIntervalSeconds }
 	function getChatMaxLength() { return variables.chatMaxLength }
+	function getMonsterVisibilityRadius() { return variables.monsterVisibilityRadius }
 
+	// Resolves each npc's raw shopCatalog item keys (the source of truth
+	// handleBuyItem validates against, see PlayerService) into the
+	// display-ready shape the client's shop panel renders — same
+	// key/name/price/equipSlot/rarity fields the old standalone
+	// sendShopCatalog message used to send once globally, now carried per
+	// merchant as part of the npc itself instead of a separate message.
 	function npcSnapshot() {
 		var list = []
 		for ( var id in variables.npcs ) {
 			var n = variables.npcs[ id ]
-			list.append( { id: n.id, name: n.name, x: n.x, z: n.z, rotationY: n.rotationY, model: n.model } )
+			var catalog = []
+			for ( var key in n.shopCatalog ) {
+				var t = variables.itemTypes[ key ]
+				catalog.append( { key: key, name: t.name, price: t.price, equipSlot: t.equipSlot, rarity: t.rarity, usable: t.usable } )
+			}
+			list.append( { id: n.id, name: n.name, x: n.x, z: n.z, rotationY: n.rotationY, model: n.model, catalog: catalog } )
 		}
 		return list
 	}
@@ -175,7 +424,7 @@ class {
 	function zoneSnapshot() {
 		var list = []
 		for ( var zone in variables.zones ) {
-			list.append( { key: zone.key, name: zone.name, minRadius: zone.minRadius, maxRadius: zone.maxRadius } )
+			list.append( { key: zone.key, name: zone.name, minRadius: zone.minRadius, maxRadius: zone.maxRadius, groundTint: zone.groundTint } )
 		}
 		return list
 	}

@@ -46,10 +46,20 @@ export function updateNpcAnimations(registry, delta) {
   }
 }
 
-export function getNearestNpcDistance(player, registry) {
-  let nearest = Infinity;
+// Multiple merchants now exist (one per zone, spread far enough apart that
+// a player is realistically only ever in range of one at a time) — returns
+// the closest one's registry entry (mesh + data, including its catalog),
+// or null if the registry is empty. Distance-only checks (is *any* npc
+// nearby) can just read `.distance` off the result.
+export function getNearestNpc(player, registry) {
+  let nearest = null;
+  let nearestDist = Infinity;
   for (const entry of registry.values()) {
-    nearest = Math.min(nearest, Math.hypot(player.position.x - entry.data.x, player.position.z - entry.data.z));
+    const dist = Math.hypot(player.position.x - entry.data.x, player.position.z - entry.data.z);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearest = entry;
+    }
   }
-  return nearest;
+  return nearest ? { ...nearest, distance: nearestDist } : null;
 }

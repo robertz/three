@@ -2,18 +2,86 @@ import * as THREE from "three";
 import { cloneModel, setAnimation } from "./models.js";
 import { lerp, lerpAngle, smoothingFactor } from "./interpolate.js";
 
-// alphaBoar/direWolf are Highlands-zone reskins of the same two base
-// models — no new art, just a bigger scale and a darker tint (below) to
-// read as tougher versions of the Meadow mobs they're leveled up from.
-const MODEL_KEY = { boar: "pig", wolf: "wolf", alphaBoar: "pig", direWolf: "wolf" };
-const MONSTER_SCALE = { boar: 0.15, wolf: 0.35, alphaBoar: 0.22, direWolf: 0.5 };
-const BASE_Y = { boar: 0, wolf: 0, alphaBoar: 0, direWolf: 0 };
-// The pig model (standing in for "Boar") only ships an idle/jump pair, no
-// walk cycle — WALK_CLIP left null for it, and setAnimation()/below just
-// never switches away from idle for a monster with no walk clip.
-const IDLE_CLIP = { boar: "Armature|Idle", wolf: "Idle", alphaBoar: "Armature|Idle", direWolf: "Idle" };
-const WALK_CLIP = { boar: null, wolf: "Walk", alphaBoar: null, direWolf: "Walk" };
-const TINT = { alphaBoar: 0x6b3620, direWolf: 0x23232b };
+// Every zone's two monster types (see server GameConfig.bx's _registerZone
+// calls) are reskins of the same two base models — no new art per zone,
+// just a bigger scale and a zone-flavored tint (below) to read as
+// successively tougher versions of the same pig/wolf the Meadow started
+// with. Every boar-type key maps to "pig", every wolf-type key to "wolf".
+const BOAR_TYPES = ["boar", "alphaBoar", "thornBoar", "frostBoar", "cinderBoar", "bogBoar", "shadowBoar", "mawTusker"];
+const WOLF_TYPES = ["wolf", "direWolf", "brambleWolf", "frostWolf", "emberWolf", "blightWolf", "nightfangWolf", "wyrmfangStalker"];
+
+const MODEL_KEY = {};
+const BASE_Y = {};
+// The pig model (standing in for every boar-type) only ships an idle/jump
+// pair, no walk cycle — WALK_CLIP left null for those, and setAnimation()
+// below just never switches away from idle for a monster with no walk clip.
+const IDLE_CLIP = {};
+const WALK_CLIP = {};
+const NAMES = {};
+for (const key of BOAR_TYPES) {
+  MODEL_KEY[key] = "pig";
+  BASE_Y[key] = 0;
+  IDLE_CLIP[key] = "Armature|Idle";
+  WALK_CLIP[key] = null;
+}
+for (const key of WOLF_TYPES) {
+  MODEL_KEY[key] = "wolf";
+  BASE_Y[key] = 0;
+  IDLE_CLIP[key] = "Idle";
+  WALK_CLIP[key] = "Walk";
+}
+
+// Scale grows tier over tier (BOAR_TYPES/WOLF_TYPES are in zone order, tier
+// 1 first) so each zone's monsters read as visibly bigger than the last,
+// same idea as alphaBoar/direWolf already being scaled up from boar/wolf.
+const BOAR_SCALE = [0.15, 0.22, 0.26, 0.3, 0.34, 0.38, 0.42, 0.46];
+const WOLF_SCALE = [0.35, 0.5, 0.58, 0.66, 0.74, 0.82, 0.9, 0.98];
+const MONSTER_SCALE = {};
+BOAR_TYPES.forEach((key, i) => (MONSTER_SCALE[key] = BOAR_SCALE[i]));
+WOLF_TYPES.forEach((key, i) => (MONSTER_SCALE[key] = WOLF_SCALE[i]));
+
+// Display names — the server never sends one in monsterSnapshot() (see
+// MonsterService.bx), just the type key, so this is the single source of
+// truth for what the HUD/nameplate shows. Keep in sync with each zone's
+// boarName/wolfName in server GameConfig.bx.
+Object.assign(NAMES, {
+  boar: "Boar",
+  wolf: "Wolf",
+  alphaBoar: "Alpha Boar",
+  direWolf: "Dire Wolf",
+  thornBoar: "Thorn Boar",
+  brambleWolf: "Bramble Wolf",
+  frostBoar: "Frost Boar",
+  frostWolf: "Frost Wolf",
+  cinderBoar: "Cinder Boar",
+  emberWolf: "Ember Wolf",
+  bogBoar: "Bog Boar",
+  blightWolf: "Blight Wolf",
+  shadowBoar: "Shadow Boar",
+  nightfangWolf: "Nightfang Wolf",
+  mawTusker: "Maw Tusker",
+  wyrmfangStalker: "Wyrmfang Stalker",
+});
+
+// Tint applied at 0.55 strength (see createMonsterMesh) — roughly matches
+// each zone's own groundTint (see GameConfig.bx's _registerZone calls) so
+// a zone's monsters read as native to it, not just recolored at random.
+const TINT = {
+  alphaBoar: 0x6b3620,
+  direWolf: 0x23232b,
+  thornBoar: 0x4a5c2e,
+  brambleWolf: 0x2e3b1f,
+  frostBoar: 0xb8d4de,
+  frostWolf: 0x8fb5c2,
+  cinderBoar: 0x8a3f1f,
+  emberWolf: 0xb5451f,
+  bogBoar: 0x5c6b2e,
+  blightWolf: 0x3f4a1f,
+  shadowBoar: 0x453a5c,
+  nightfangWolf: 0x2a2338,
+  mawTusker: 0x6b1f1f,
+  wyrmfangStalker: 0x3a0f0f,
+};
 const WALK_THRESHOLD = 0.01;
 const POSITION_SMOOTHING = 10;
 
@@ -45,8 +113,6 @@ function createMonsterMesh(typeKey) {
 
   return group;
 }
-
-const NAMES = { boar: "Boar", wolf: "Wolf", alphaBoar: "Alpha Boar", direWolf: "Dire Wolf" };
 
 export function createMonsterRegistry() {
   return new Map();

@@ -75,7 +75,6 @@ app.ws( "/game", ( connection ) => {
 	playerService.sendStats( playerId )
 	playerService.sendInventory( playerId )
 	playerService.sendEquipment( playerId )
-	playerService.sendShopCatalog( playerId )
 
 	connection.onMessage( ( text ) => {
 		var data = JSONDeserialize( text )

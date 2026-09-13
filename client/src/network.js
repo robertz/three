@@ -1,7 +1,7 @@
 import { createPlayerMesh } from "./player.js";
 import { applyMonsterSnapshot, flashHit } from "./monsters.js";
 import { applyNpcSnapshot } from "./npc.js";
-import { applyWorldSnapshot } from "./world.js";
+import { applyWorldSnapshot, prepareZones } from "./world.js";
 import { setAnimation } from "./models.js";
 import { lerp, lerpAngle, smoothingFactor } from "./interpolate.js";
 
@@ -16,7 +16,7 @@ export function connectNetwork(
   registry,
   npcRegistry,
   world,
-  { onDied, onRespawn, onChat, onInventory, onEquipment, onShopCatalog, onZones, onKicked, onDisconnected } = {}
+  { onDied, onRespawn, onChat, onInventory, onEquipment, onZones, onKicked, onDisconnected } = {}
 ) {
   let kicked = false;
   const state = {
@@ -71,13 +71,15 @@ export function connectNetwork(
     const msg = JSON.parse(event.data);
 
     switch (msg.type) {
-      case "welcome":
+      case "welcome": {
         msg.players.forEach((p) => addRemotePlayer(state, scene, p));
         applyMonsterSnapshot(scene, registry, msg.monsters);
         applyNpcSnapshot(scene, npcRegistry, msg.npcs);
-        applyWorldSnapshot(scene, world, msg.mountains, msg.props);
-        onZones?.(msg.zones);
+        const zones = prepareZones(msg.zones);
+        applyWorldSnapshot(scene, world, zones, msg.mountains, msg.props);
+        onZones?.(zones);
         break;
+      }
       case "join":
         addRemotePlayer(state, scene, msg);
         break;
@@ -130,9 +132,6 @@ export function connectNetwork(
         break;
       case "equipment":
         onEquipment?.(msg.slots);
-        break;
-      case "shopCatalog":
-        onShopCatalog?.(msg.items);
         break;
       case "died":
         onDied?.();

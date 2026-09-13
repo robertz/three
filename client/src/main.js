@@ -11,9 +11,10 @@ import { showCharacterSelect } from "./characterSelect.js";
 import { createChat } from "./chat.js";
 import { createInventory } from "./inventory.js";
 import { createEquipment } from "./equipment.js";
+import { createCharacterSheet } from "./characterSheet.js";
 import { createShop } from "./shop.js";
 import { applyEquipmentVisual } from "./equipVisual.js";
-import { createNpcRegistry, updateNpcAnimations, getNearestNpcDistance } from "./npc.js";
+import { createNpcRegistry, updateNpcAnimations, getNearestNpc } from "./npc.js";
 import { createZoneBanner } from "./zone.js";
 import { loadModels } from "./models.js";
 
@@ -26,7 +27,7 @@ async function main() {
 
   const scene = new THREE.Scene();
 
-  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 650);
   camera.position.set(0, 6, -10);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -37,6 +38,7 @@ async function main() {
   const world = createWorld(scene);
   const player = createPlayer(scene);
   Object.assign(player, {
+    name: character.name,
     level: character.level,
     hp: character.hp,
     maxHp: character.maxHp,
@@ -61,6 +63,7 @@ async function main() {
     (itemKey) => network.sendSellItem(itemKey)
   );
   const equipment = createEquipment((slot) => network.sendUnequipItem(slot));
+  const characterSheet = createCharacterSheet();
   const shop = createShop((itemKey) => network.sendBuyItem(itemKey));
   const zoneBanner = createZoneBanner();
   network = connectNetwork(scene, player, monsterRegistry, npcRegistry, world, {
@@ -74,9 +77,9 @@ async function main() {
     onInventory: inventory.setItems,
     onEquipment: (slots) => {
       equipment.setSlots(slots);
+      characterSheet.setEquipment(slots);
       applyEquipmentVisual(player, slots);
     },
-    onShopCatalog: shop.setCatalog,
     onZones: zoneBanner.setZones,
     onKicked: () => {
       alert("Logged in from another location.");
@@ -122,11 +125,12 @@ async function main() {
     updateMonsterAnimations(monsterRegistry, delta);
     updateMonsterPositions(monsterRegistry, delta);
     updateNpcAnimations(npcRegistry, delta);
-    const nearShop = getNearestNpcDistance(player, npcRegistry) <= CLIENT_SHOP_RANGE;
-    shop.setInRange(nearShop);
-    inventory.setCanSell(nearShop);
+    const nearestNpc = getNearestNpc(player, npcRegistry);
+    const nearNpc = nearestNpc && nearestNpc.distance <= CLIENT_SHOP_RANGE ? nearestNpc.data : null;
+    shop.setNearby(nearNpc);
+    inventory.setCanSell(!!nearNpc);
     shop.setGold(player.gold);
-    zoneBanner.update(player);
+    zoneBanner.update(player, scene);
 
     if (!dead) {
       updatePlayer(player, delta, world);
@@ -148,6 +152,7 @@ async function main() {
     hud.updateTarget(target);
     hud.updateSkill(combat.skillCooldown, SKILL_COOLDOWN);
     hud.setDead(dead);
+    characterSheet.update(player);
 
     renderer.render(scene, camera);
     requestAnimationFrame(tick);

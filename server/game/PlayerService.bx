@@ -342,21 +342,32 @@ class {
 		persist( playerId )
 	}
 
-	function sendShopCatalog( playerId ) {
-		var itemTypes = variables.gameConfig.getItemTypes()
-		var items = []
-		for ( var key in variables.gameConfig.getShopCatalog() ) {
-			var t = itemTypes[ key ]
-			items.append( { key: key, name: t.name, price: t.price, equipSlot: t.equipSlot, rarity: t.rarity } )
+	// Finds the merchant nearest a player, but only returns it if the
+	// player is actually within shop range of it — multiple npcs exist
+	// now (one per zone, see GameConfig), and since they're spread far
+	// enough apart that a player is realistically only ever in range of
+	// one at a time, "nearest" and "the one you're standing next to" are
+	// the same thing in practice.
+	function nearbyNpc( playerId ) {
+		var p = variables.players[ playerId ]
+		var shopRange = variables.gameConfig.getShopRange()
+		var nearest = ""
+		var nearestDist = shopRange
+		for ( var id in variables.gameConfig.getNpcs() ) {
+			var npc = variables.gameConfig.getNpcs()[ id ]
+			var dist = variables.javaMath.sqrt( ( ( p.x - npc.x ) * ( p.x - npc.x ) ) + ( ( p.z - npc.z ) * ( p.z - npc.z ) ) )
+			if ( dist <= nearestDist ) {
+				nearestDist = dist
+				nearest = id
+			}
 		}
-		sendToPlayer( playerId, { type: "shopCatalog", items: items } )
+		return nearest
 	}
 
 	function handleBuyItem( playerId, itemKey ) {
 		var p = variables.players[ playerId ]
 		var itemTypes = variables.gameConfig.getItemTypes()
-		var shopCatalog = variables.gameConfig.getShopCatalog()
-		if ( !arrayContains( shopCatalog, itemKey ) || !structKeyExists( itemTypes, itemKey ) ) {
+		if ( !structKeyExists( itemTypes, itemKey ) ) {
 			return
 		}
 		var price = itemTypes[ itemKey ].price
@@ -364,9 +375,11 @@ class {
 			return
 		}
 
-		var npc = variables.gameConfig.getNpcs()[ "shopkeeper1" ]
-		var dist = variables.javaMath.sqrt( ( ( p.x - npc.x ) * ( p.x - npc.x ) ) + ( ( p.z - npc.z ) * ( p.z - npc.z ) ) )
-		if ( dist > variables.gameConfig.getShopRange() ) {
+		// The item has to be in THIS merchant's catalog specifically — a
+		// player standing at the Meadow shop can't buy Dragon's Maw gear
+		// just because both merchants exist somewhere in the world.
+		var npcId = nearbyNpc( playerId )
+		if ( !len( npcId ) || !arrayContains( variables.gameConfig.getNpcs()[ npcId ].shopCatalog, itemKey ) ) {
 			return
 		}
 
@@ -388,9 +401,9 @@ class {
 			return
 		}
 
-		var npc = variables.gameConfig.getNpcs()[ "shopkeeper1" ]
-		var dist = variables.javaMath.sqrt( ( ( p.x - npc.x ) * ( p.x - npc.x ) ) + ( ( p.z - npc.z ) * ( p.z - npc.z ) ) )
-		if ( dist > variables.gameConfig.getShopRange() ) {
+		// Any merchant buys any junk item — unlike buying, selling isn't
+		// gated to that npc's own catalog.
+		if ( !len( nearbyNpc( playerId ) ) ) {
 			return
 		}
 

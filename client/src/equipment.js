@@ -1,8 +1,8 @@
-import { injectStyles } from "./hud.js";
+import { injectStyles, GOLD } from "./hud.js";
+import { rarityColor, iconFor } from "./itemDisplay.js";
 
 const SLOT_LABELS = { weapon: "Weapon", helmet: "Helmet", chest: "Chest", trinket: "Trinket" };
 const SLOT_ORDER = ["weapon", "helmet", "chest", "trinket"];
-const RARITY_COLOR = { common: "#fff", rare: "#4a9eff" };
 
 export function createEquipment(sendUnequipItem) {
   injectStyles();
@@ -11,26 +11,32 @@ export function createEquipment(sendUnequipItem) {
 
   const panel = document.createElement("div");
   panel.className = "wow-hud wow-panel";
-  panel.style.cssText = "position:fixed;left:16px;bottom:190px;width:220px;padding:10px 14px;display:none;pointer-events:auto;";
+  panel.style.cssText = "position:fixed;left:282px;bottom:190px;width:230px;padding:10px 12px;display:none;pointer-events:auto;";
   document.body.appendChild(panel);
 
   function render() {
-    const rows = SLOT_ORDER.map((slotKey) => {
+    const boxes = SLOT_ORDER.map((slotKey) => {
       const entry = slots.find((s) => s.slot === slotKey) ?? { key: "", name: "" };
       const filled = Boolean(entry.key);
-      const nameHtml = filled
-        ? `<span style="color:${RARITY_COLOR[entry.rarity] ?? RARITY_COLOR.common};">${entry.name}</span>`
-        : "Empty";
+      const color = filled ? rarityColor(entry.rarity) : "#6b5a3a";
+
       return `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:12px;">
-          <span>${SLOT_LABELS[slotKey]}: ${nameHtml}</span>
-          ${filled ? `<span class="equip-action" data-slot="${slotKey}" style="color:#d4af37;cursor:pointer;margin-left:6px;">Unequip</span>` : ""}
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px;width:96px;">
+          <div class="wow-slot-icon ${filled ? "" : "empty"}" style="width:44px;height:44px;font-size:20px;border-color:${color};" data-slot="${slotKey}">
+            ${iconFor({ slot: slotKey })}
+          </div>
+          <div style="font-size:10px;color:#8a7a58;letter-spacing:0.5px;">${SLOT_LABELS[slotKey]}</div>
+          <div style="font-size:11px;color:${color};text-align:center;min-height:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:96px;">${filled ? entry.name : "Empty"}</div>
+          ${filled ? `<span class="wow-action-btn" data-slot="${slotKey}" style="color:${GOLD};">Unequip</span>` : ""}
         </div>`;
     }).join("");
 
-    panel.innerHTML = `<div style="font-weight:bold;margin-bottom:6px;">Equipment [E]</div>${rows}`;
+    panel.innerHTML = `
+      <div class="wow-panel-title">Equipment [E]</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 6px;justify-items:center;">${boxes}</div>
+    `;
 
-    panel.querySelectorAll(".equip-action").forEach((el) => {
+    panel.querySelectorAll(".wow-action-btn").forEach((el) => {
       el.addEventListener("click", () => sendUnequipItem(el.dataset.slot));
     });
   }

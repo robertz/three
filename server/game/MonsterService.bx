@@ -55,13 +55,41 @@ class {
 		}
 	}
 
-	function monsterSnapshot() {
+	// players is optional (defaults to every live player) purely so the
+	// specs can call this with no arguments — production call sites (the
+	// tick broadcast, and the welcome payload for a newly connecting
+	// player) always pass the live players struct, filtering the wire
+	// snapshot down to whatever's within getMonsterVisibilityRadius() of
+	// at least one of them. A monster nobody's near just isn't in the
+	// list — the client's applyMonsterSnapshot() already treats "not in
+	// the latest snapshot" as "remove it", so this doubles as the culling
+	// tickMonsterAI() below does for processing.
+	function monsterSnapshot( players = variables.playerService.getPlayers() ) {
 		var list = []
+		var visRadius = variables.gameConfig.getMonsterVisibilityRadius()
 		for ( var id in variables.monsters ) {
 			var m = variables.monsters[ id ]
+			if ( nearestPlayerDistance( m, players ) > visRadius ) {
+				continue
+			}
 			list.append( { id: id, type: m.type, level: m.level, x: m.x, z: m.z, rotationY: m.rotationY, hp: m.hp, maxHp: m.maxHp, alive: m.alive } )
 		}
 		return list
+	}
+
+	function nearestPlayerDistance( m, players ) {
+		var nearest = 999999999
+		for ( var pid in players ) {
+			var p = players[ pid ]
+			if ( p.respawning ?: false ) {
+				continue
+			}
+			var d = variables.javaMath.sqrt( ( ( p.x - m.x ) * ( p.x - m.x ) ) + ( ( p.z - m.z ) * ( p.z - m.z ) ) )
+			if ( d < nearest ) {
+				nearest = d
+			}
+		}
+		return nearest
 	}
 
 	function handleAttack( playerId, targetId, isSkill ) {
@@ -143,9 +171,21 @@ class {
 		var players = variables.playerService.getPlayers()
 		var tickSeconds = variables.gameConfig.getTickSeconds()
 		var wanderRadius = variables.gameConfig.getWanderRadius()
+		var visRadius = variables.gameConfig.getMonsterVisibilityRadius()
 
 		for ( var mid in variables.monsters ) {
 			var m = variables.monsters[ mid ]
+
+			// Nobody's anywhere near this one — skip wander/aggro/respawn
+			// processing entirely rather than spending a tick animating a
+			// monster no client can see. It picks back up exactly where a
+			// live one would've been (mid-wander position, or a corpse
+			// waiting past its respawnAt) the moment a player gets close
+			// enough again, just running "behind" by however long it was
+			// unobserved — invisible either way, so nothing to notice.
+			if ( nearestPlayerDistance( m, players ) > visRadius ) {
+				continue
+			}
 
 			if ( !m.alive ) {
 				if ( getTickCount() / 1000 >= m.respawnAt ) {
