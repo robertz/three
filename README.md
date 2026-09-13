@@ -494,6 +494,21 @@ a full combat-kill still grants correct xp/gold/loot, shop purchases are
 still gated server-side on both range and gold, and logging in from a
 second connection still kicks the first.
 
+Milestone 29 (done): other players' movement is animated. Remote player
+meshes were always advancing their `AnimationMixer` (so idle kept looping)
+but nothing ever told them to switch to the walk clip — unlike
+`monsters.js`'s snapshot handling, `network.js`'s `"move"` case never
+called `setAnimation()`, so a remote player visually slid across the
+ground in an idle pose no matter how fast they were actually moving.
+Fixed by comparing each new `"move"` message's position against the
+mesh's current interpolation target (same `movedDist > threshold` idea
+`monsters.js` already uses) and calling `setAnimation(remote, "walk"|
+"idle")` accordingly. Verified by connecting a second, scripted
+WebSocket client (bypassing the browser) that sends continuous `"move"`
+messages the same way the real client always does (unconditionally, even
+at rest) and confirming the first client's rendered remote mesh reports
+`currentAnim === "walk"` while it's actually moving.
+
 Not yet wired up: matching the new fantasy theme in the chat/inventory
 panels and login/character-select-adjacent screens (login itself still uses
 the original plain styling), and re-selecting a character without

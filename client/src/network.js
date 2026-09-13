@@ -2,11 +2,13 @@ import { createPlayerMesh } from "./player.js";
 import { applyMonsterSnapshot, flashHit } from "./monsters.js";
 import { applyNpcSnapshot } from "./npc.js";
 import { applyWorldSnapshot } from "./world.js";
+import { setAnimation } from "./models.js";
 import { lerp, lerpAngle, smoothingFactor } from "./interpolate.js";
 
 const WS_URL = "ws://localhost:3001/game";
 const SEND_INTERVAL = 0.1;
 const POSITION_SMOOTHING = 10;
+const WALK_THRESHOLD = 0.01;
 
 export function connectNetwork(
   scene,
@@ -77,6 +79,8 @@ export function connectNetwork(
       case "move": {
         const remote = state.remotePlayers.get(msg.id);
         if (remote) {
+          const movedDist = Math.hypot(msg.x - remote.target.x, msg.z - remote.target.z);
+          setAnimation(remote, movedDist > WALK_THRESHOLD ? "walk" : "idle");
           remote.target = { x: msg.x, z: msg.z, rotationY: msg.rotationY };
         }
         break;
