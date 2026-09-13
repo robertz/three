@@ -25,3 +25,6 @@ build/
 # BoxLang
 boxlang_modules/
 .boxlang/
+
+# Local DB backups (mysqldump snapshots taken before schema migrations)
+server/db/backups/

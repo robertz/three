@@ -370,9 +370,72 @@ itch.io signs a short-lived direct-storage URL per file after clicking
 through "No thanks, just take me to the downloads", visible in the
 browser's network requests once triggered.
 
-Not yet wired up: multiple characters per account, equipment slots, a shop
-to spend gold, and matching the new fantasy theme in the chat/inventory
-panels and login screen (all three still use the original plain styling).
+Milestone 24 (done): multiple characters per account. `characters` moved
+from `account_id` as its own primary key to a surrogate `id` (up to 3 rows
+per account, each with a chosen `name`, unique per account). A new
+character-select screen (`client/src/characterSelect.js`, WoW-themed via
+`hud.js`'s newly-exported `injectStyles()`) appears after login, listing
+existing characters with Select/Delete and a Create form (hidden at the
+3-character cap). Session-to-character binding is a new nullable
+`sessions.character_id` column, set by `POST /api/characters/:id/select`
+(`AuthService.setSessionCharacter()`) and read by `app.ws("/game")`
+(`AuthService.sessionInfo()`) — a session identifies an account only until
+a character is explicitly selected, at which point the socket connects as
+that specific character. `inventory_items` was rekeyed from `account_id` to
+`character_id`, making inventory (and gold, already a `characters` column)
+genuinely per-character rather than shared account-wide. Verified: created
+3 characters, confirmed the cap rejects a 4th both client- and server-side;
+fought a monster on one character and confirmed a second character's
+gold/inventory were untouched; deleted a character and confirmed its
+`inventory_items` rows cascade-deleted; confirmed selecting another
+account's character id returns 403.
+
+Milestone 25 (done): equipment slots — `weapon`, `helmet`, `chest`,
+`trinket`, each additively boosting `attackDamage` and/or `maxHp` (the only
+two combat stats that exist). New `equipment` table + `EquipmentService.bx`
+(pure storage; equipping moves an item out of `inventory_items` into
+`equipment` rather than introducing per-item unique instances). Player
+stats split into persisted **base** values (`baseAttackDamage`/`baseMaxHp`,
+leveled up via `grantXp()`) and **effective** values (`attackDamage`/
+`maxHp` = base + equipped bonuses, recomputed by `recomputeEffectiveStats()`
+on connect/equip/unequip/level-up) — `persist()` saves only the base
+values, so gear bonuses never permanently bake into progression. New
+`client/src/equipment.js` panel (`E` key) shows equipped items with an
+Unequip action; equipping itself is a new "Equip" action alongside
+`inventory.js`'s existing "Use". **Bug caught during testing**: the WS
+connect handler computed effective stats but never sent them to the
+client — the client's initial stats come from the REST character-select
+response (always base values), so previously-equipped gear silently didn't
+show its bonus until the next unrelated stat-changing action. Fixed by
+calling `sendStats()` right after `recomputeEffectiveStats()` in the
+connect handler. Verified end-to-end: equip/unequip via the real UI with
+correct stat changes, gear persisting correctly across a reconnect, and a
+direct `network.ws.send({type:"equipItem",...})` call for an item not
+actually owned confirmed rejected server-side.
+
+Milestone 26 (done): a shop NPC. A static, non-combat vendor ("Gilda the
+Vendor", modeled with KayKit's Mage — `client/public/models/
+shopkeeper.glb`, copied from the same pack as the player's Knight) stands
+at a fixed world position, rendered via a new `client/src/npc.js` kept
+deliberately separate from `monsters.js`'s registry so `combat.js`'s
+raycast targeting and auto-attack/facing gate never see it. A "Press B to
+shop" hint appears within range (client-side distance check for UX); the
+shop panel (`client/src/shop.js`) lists a fixed catalog with prices, and
+buying is gated server-side in `handleBuyItem()` by catalog membership,
+gold, *and* distance to the NPC — mirroring `handleAttack()`'s
+range-check-is-the-real-authority pattern exactly. Verified the hint
+toggles at the right distance, a purchase within range/with enough gold
+deducts gold and adds the item to inventory, and two direct
+`network.ws.send({type:"buyItem",...})` bypass calls (far from the NPC;
+gold below price) both correctly landed no change.
+
+Not yet wired up: matching the new fantasy theme in the chat/inventory
+panels and login/character-select-adjacent screens (login itself still uses
+the original plain styling), and re-selecting a character without
+re-entering the character-select screen on every page reload (the server
+remembers the last-selected character via `sessions.character_id`, but the
+client always re-shows character-select after `checkSession()` rather than
+skipping straight back in).
 
 ## Running it
 

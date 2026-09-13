@@ -1,8 +1,8 @@
 import { logout } from "./auth.js";
 
-const GOLD = "#d4af37";
+export const GOLD = "#d4af37";
 
-function injectStyles() {
+export function injectStyles() {
   if (document.getElementById("wow-hud-style")) return;
 
   const style = document.createElement("style");
@@ -232,7 +232,7 @@ export function createHud() {
         return;
       }
       targetPanel.style.display = "block";
-      targetNameEl.textContent = `${target.name}  ${Math.max(0, Math.round(target.hp))}/${target.maxHp}`;
+      targetNameEl.textContent = `${target.name}  Lv.${target.level}  ${Math.max(0, Math.round(target.hp))}/${target.maxHp}`;
       targetHpBarEl.style.width = `${Math.max(0, (target.hp / target.maxHp) * 100)}%`;
     },
     updateSkill(cooldownRemaining, cooldownTotal) {

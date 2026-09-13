@@ -1,42 +1,44 @@
 /**
- * Per-account item storage. Quantities only — no item instances/uniques,
- * no equipment slots yet, just a stackable count per item key.
+ * Per-character item storage. Quantities only — no item instances/uniques,
+ * just a stackable count per item key. Equipped items are moved out of
+ * here into the `equipment` table (see EquipmentService) rather than
+ * having a separate "equipped" flag on a row here.
  */
 class {
 
-	function addItem( accountId, itemKey, quantity = 1 ) {
+	function addItem( characterId, itemKey, quantity = 1 ) {
 		queryExecute(
-			"INSERT INTO inventory_items (account_id, item_key, quantity)
-			 VALUES (:accountId, :itemKey, :quantity)
+			"INSERT INTO inventory_items (character_id, item_key, quantity)
+			 VALUES (:characterId, :itemKey, :quantity)
 			 ON DUPLICATE KEY UPDATE quantity = quantity + :quantity",
-			{ accountId: arguments.accountId, itemKey: arguments.itemKey, quantity: arguments.quantity }
+			{ characterId: arguments.characterId, itemKey: arguments.itemKey, quantity: arguments.quantity }
 		);
 	}
 
-	function removeItem( accountId, itemKey, quantity = 1 ) {
+	function removeItem( characterId, itemKey, quantity = 1 ) {
 		queryExecute(
 			"UPDATE inventory_items SET quantity = quantity - :quantity
-			 WHERE account_id = :accountId AND item_key = :itemKey AND quantity >= :quantity",
-			{ accountId: arguments.accountId, itemKey: arguments.itemKey, quantity: arguments.quantity }
+			 WHERE character_id = :characterId AND item_key = :itemKey AND quantity >= :quantity",
+			{ characterId: arguments.characterId, itemKey: arguments.itemKey, quantity: arguments.quantity }
 		);
 		queryExecute(
-			"DELETE FROM inventory_items WHERE account_id = :accountId AND quantity <= 0",
-			{ accountId: arguments.accountId }
+			"DELETE FROM inventory_items WHERE character_id = :characterId AND quantity <= 0",
+			{ characterId: arguments.characterId }
 		);
 	}
 
-	function hasItem( accountId, itemKey, quantity = 1 ) {
+	function hasItem( characterId, itemKey, quantity = 1 ) {
 		var rows = queryExecute(
-			"SELECT quantity FROM inventory_items WHERE account_id = :accountId AND item_key = :itemKey",
-			{ accountId: arguments.accountId, itemKey: arguments.itemKey }
+			"SELECT quantity FROM inventory_items WHERE character_id = :characterId AND item_key = :itemKey",
+			{ characterId: arguments.characterId, itemKey: arguments.itemKey }
 		);
 		return rows.recordCount > 0 && rows.quantity[ 1 ] >= arguments.quantity;
 	}
 
-	function list( accountId ) {
+	function list( characterId ) {
 		var rows = queryExecute(
-			"SELECT item_key, quantity FROM inventory_items WHERE account_id = :accountId AND quantity > 0",
-			{ accountId: arguments.accountId }
+			"SELECT item_key, quantity FROM inventory_items WHERE character_id = :characterId AND quantity > 0",
+			{ characterId: arguments.characterId }
 		);
 		var items = [];
 		for ( var i = 1; i <= rows.recordCount; i++ ) {

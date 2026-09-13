@@ -84,6 +84,34 @@ class {
 		queryExecute( "DELETE FROM sessions WHERE token = :token", { token: arguments.token } );
 	}
 
+	/**
+	 * Records which of the account's characters this session is currently
+	 * playing as — set by the character-select screen's "select" action,
+	 * read by app.ws("/game") at connect time. A session starts with no
+	 * character selected (NULL), since login now lands on character-select
+	 * rather than a single auto-loaded character.
+	 */
+	function setSessionCharacter( token, characterId ) {
+		queryExecute(
+			"UPDATE sessions SET character_id = :characterId WHERE token = :token",
+			{ token: arguments.token, characterId: arguments.characterId }
+		);
+	}
+
+	function sessionInfo( token ) {
+		if ( !len( arguments.token ?: "" ) ) {
+			return { accountId: 0, characterId: 0 };
+		}
+		var rows = queryExecute(
+			"SELECT account_id, character_id FROM sessions WHERE token = :token",
+			{ token: arguments.token }
+		);
+		if ( !rows.recordCount ) {
+			return { accountId: 0, characterId: 0 };
+		}
+		return { accountId: rows.account_id[ 1 ], characterId: rows.character_id[ 1 ] ?: 0 };
+	}
+
 	function usernameForAccountId( accountId ) {
 		var rows = queryExecute(
 			"SELECT username FROM accounts WHERE id = :accountId",

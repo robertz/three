@@ -7,7 +7,9 @@ CREATE TABLE IF NOT EXISTS accounts (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS characters (
-	account_id INT NOT NULL PRIMARY KEY,
+	id INT AUTO_INCREMENT PRIMARY KEY,
+	account_id INT NOT NULL,
+	name VARCHAR(30) NOT NULL,
 	x DOUBLE NOT NULL DEFAULT 0,
 	z DOUBLE NOT NULL DEFAULT 0,
 	rotation_y DOUBLE NOT NULL DEFAULT 0,
@@ -19,20 +21,32 @@ CREATE TABLE IF NOT EXISTS characters (
 	attack_damage INT NOT NULL DEFAULT 10,
 	gold INT NOT NULL DEFAULT 0,
 	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-	CONSTRAINT fk_characters_account FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE
+	CONSTRAINT fk_characters_account FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE,
+	KEY idx_characters_account (account_id),
+	UNIQUE KEY uq_characters_account_name (account_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS sessions (
 	token VARCHAR(64) NOT NULL PRIMARY KEY,
 	account_id INT NOT NULL,
+	character_id INT NULL,
 	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	CONSTRAINT fk_sessions_account FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE
+	CONSTRAINT fk_sessions_account FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE,
+	CONSTRAINT fk_sessions_character FOREIGN KEY (character_id) REFERENCES characters (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS inventory_items (
-	account_id INT NOT NULL,
+	character_id INT NOT NULL,
 	item_key VARCHAR(50) NOT NULL,
 	quantity INT NOT NULL DEFAULT 0,
-	PRIMARY KEY (account_id, item_key),
-	CONSTRAINT fk_inventory_account FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE
+	PRIMARY KEY (character_id, item_key),
+	CONSTRAINT fk_inventory_character FOREIGN KEY (character_id) REFERENCES characters (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS equipment (
+	character_id INT NOT NULL,
+	slot VARCHAR(20) NOT NULL,
+	item_key VARCHAR(50) NOT NULL,
+	PRIMARY KEY (character_id, slot),
+	CONSTRAINT fk_equipment_character FOREIGN KEY (character_id) REFERENCES characters (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

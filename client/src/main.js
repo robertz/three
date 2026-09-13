@@ -3,16 +3,24 @@ import { createWorld } from "./world.js";
 import { createPlayer, updatePlayer } from "./player.js";
 import { createCameraController, updateCamera } from "./camera.js";
 import { createMonsterRegistry, updateMonsterAnimations, updateMonsterPositions } from "./monsters.js";
-import { createCombat, updateCombat, useSkill, getTarget, SKILL_COOLDOWN } from "./combat.js";
+import { createCombat, updateCombat, useSkill, getTarget, selectNearestTarget, SKILL_COOLDOWN } from "./combat.js";
 import { createHud } from "./hud.js";
 import { connectNetwork, updateNetwork } from "./network.js";
 import { checkSession, showAuthScreen } from "./auth.js";
+import { showCharacterSelect } from "./characterSelect.js";
 import { createChat } from "./chat.js";
 import { createInventory } from "./inventory.js";
+import { createEquipment } from "./equipment.js";
+import { createShop } from "./shop.js";
+import { createNpcRegistry, updateNpcAnimations, getNearestNpcDistance } from "./npc.js";
+import { createZoneBanner } from "./zone.js";
 import { loadModels } from "./models.js";
 
+const CLIENT_SHOP_RANGE = 4;
+
 async function main() {
-  const character = (await checkSession()) ?? (await showAuthScreen());
+  const characters = (await checkSession()) ?? (await showAuthScreen());
+  const character = await showCharacterSelect(characters);
   await loadModels();
 
   const scene = new THREE.Scene();
@@ -40,13 +48,20 @@ async function main() {
   player.rotation.y = character.rotationY;
 
   const monsterRegistry = createMonsterRegistry();
+  const npcRegistry = createNpcRegistry();
   const hud = createHud();
 
   let dead = false;
   let network;
   const chat = createChat((text) => network.sendChat(text));
-  const inventory = createInventory((itemKey) => network.sendUseItem(itemKey));
-  network = connectNetwork(scene, player, monsterRegistry, {
+  const inventory = createInventory(
+    (itemKey) => network.sendUseItem(itemKey),
+    (itemKey) => network.sendEquipItem(itemKey)
+  );
+  const equipment = createEquipment((slot) => network.sendUnequipItem(slot));
+  const shop = createShop((itemKey) => network.sendBuyItem(itemKey));
+  const zoneBanner = createZoneBanner();
+  network = connectNetwork(scene, player, monsterRegistry, npcRegistry, {
     onDied: () => {
       dead = true;
     },
@@ -55,8 +70,15 @@ async function main() {
     },
     onChat: chat.addLine,
     onInventory: inventory.setItems,
+    onEquipment: equipment.setSlots,
+    onShopCatalog: shop.setCatalog,
+    onZones: zoneBanner.setZones,
     onKicked: () => {
       alert("Logged in from another location.");
+      window.location.reload();
+    },
+    onDisconnected: () => {
+      alert("Lost connection to the server. Reloading...");
       window.location.reload();
     },
   });
@@ -73,6 +95,11 @@ async function main() {
 
   window.addEventListener("keydown", (e) => {
     if (e.key === "1" && !dead) useSkill(combat, player, monsterRegistry, network);
+    if ((e.key === "b" || e.key === "B") && shop.isInRange()) shop.toggle();
+    if (e.key === "Tab") {
+      e.preventDefault();
+      if (!dead) selectNearestTarget(combat, player, monsterRegistry);
+    }
   });
 
   window.addEventListener("resize", () => {
@@ -89,6 +116,10 @@ async function main() {
     player.mixer.update(delta);
     updateMonsterAnimations(monsterRegistry, delta);
     updateMonsterPositions(monsterRegistry, delta);
+    updateNpcAnimations(npcRegistry, delta);
+    shop.setInRange(getNearestNpcDistance(player, npcRegistry) <= CLIENT_SHOP_RANGE);
+    shop.setGold(player.gold);
+    zoneBanner.update(player);
 
     if (!dead) {
       updatePlayer(player, delta, world);

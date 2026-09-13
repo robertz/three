@@ -1,4 +1,4 @@
-export function createInventory(sendUseItem) {
+export function createInventory(sendUseItem, sendEquipItem) {
   let items = [];
 
   const panel = document.createElement("div");
@@ -15,20 +15,26 @@ export function createInventory(sendUseItem) {
     const rows = items
       .map(
         (item, i) => `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;${item.usable ? "cursor:pointer;" : ""}" data-index="${i}">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;" data-index="${i}">
           <span>${item.name} x${item.quantity}</span>
-          ${item.usable ? '<span style="color:#4ea3d9;">Use</span>' : ""}
+          <span>
+            ${item.usable ? '<span class="inv-action" data-action="use" style="color:#4ea3d9;cursor:pointer;margin-left:6px;">Use</span>' : ""}
+            ${item.equipSlot ? '<span class="inv-action" data-action="equip" style="color:#d4af37;cursor:pointer;margin-left:6px;">Equip</span>' : ""}
+          </span>
         </div>`
       )
       .join("");
 
     panel.innerHTML = `<div style="font-weight:bold;margin-bottom:4px;">Inventory [I]</div>${rows}`;
 
-    panel.querySelectorAll("[data-index]").forEach((row) => {
+    panel.querySelectorAll(".inv-action").forEach((el) => {
+      const row = el.closest("[data-index]");
       const item = items[Number(row.dataset.index)];
-      if (item.usable) {
-        row.addEventListener("click", () => sendUseItem(item.key));
-      }
+      const action = el.dataset.action;
+      el.addEventListener("click", () => {
+        if (action === "use") sendUseItem(item.key);
+        if (action === "equip") sendEquipItem(item.key);
+      });
     });
   }
 

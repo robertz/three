@@ -43,6 +43,22 @@ function isInFront(player, target) {
   return forward.dot(toTarget) >= 0;
 }
 
+export function selectNearestTarget(state, player, registry) {
+  let bestId = null;
+  let bestDist = Infinity;
+
+  for (const [id, entry] of registry) {
+    if (!entry.data?.alive || !isInFront(player, entry.data)) continue;
+    const dist = Math.hypot(player.position.x - entry.data.x, player.position.z - entry.data.z);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestId = id;
+    }
+  }
+
+  state.targetId = bestId;
+}
+
 export function getTarget(state, registry) {
   if (!state.targetId) return null;
   const entry = registry.get(state.targetId);

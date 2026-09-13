@@ -2,20 +2,32 @@ import * as THREE from "three";
 import { cloneModel, setAnimation } from "./models.js";
 import { lerp, lerpAngle, smoothingFactor } from "./interpolate.js";
 
-const MODEL_KEY = { boar: "pig", wolf: "wolf" };
-const MONSTER_SCALE = { boar: 0.15, wolf: 0.35 };
-const BASE_Y = { boar: 0, wolf: 0 };
+// alphaBoar/direWolf are Highlands-zone reskins of the same two base
+// models — no new art, just a bigger scale and a darker tint (below) to
+// read as tougher versions of the Meadow mobs they're leveled up from.
+const MODEL_KEY = { boar: "pig", wolf: "wolf", alphaBoar: "pig", direWolf: "wolf" };
+const MONSTER_SCALE = { boar: 0.15, wolf: 0.35, alphaBoar: 0.22, direWolf: 0.5 };
+const BASE_Y = { boar: 0, wolf: 0, alphaBoar: 0, direWolf: 0 };
 // The pig model (standing in for "Boar") only ships an idle/jump pair, no
 // walk cycle — WALK_CLIP left null for it, and setAnimation()/below just
 // never switches away from idle for a monster with no walk clip.
-const IDLE_CLIP = { boar: "Armature|Idle", wolf: "Idle" };
-const WALK_CLIP = { boar: null, wolf: "Walk" };
+const IDLE_CLIP = { boar: "Armature|Idle", wolf: "Idle", alphaBoar: "Armature|Idle", direWolf: "Idle" };
+const WALK_CLIP = { boar: null, wolf: "Walk", alphaBoar: null, direWolf: "Walk" };
+const TINT = { alphaBoar: 0x6b3620, direWolf: 0x23232b };
 const WALK_THRESHOLD = 0.01;
 const POSITION_SMOOTHING = 10;
 
 function createMonsterMesh(typeKey) {
   const { scene, animations } = cloneModel(MODEL_KEY[typeKey]);
   scene.scale.setScalar(MONSTER_SCALE[typeKey]);
+
+  const tint = TINT[typeKey];
+  if (tint !== undefined) {
+    const tintColor = new THREE.Color(tint);
+    scene.traverse((obj) => {
+      if (obj.isMesh) obj.material.color.lerp(tintColor, 0.55);
+    });
+  }
 
   const group = new THREE.Group();
   group.add(scene);
@@ -34,7 +46,7 @@ function createMonsterMesh(typeKey) {
   return group;
 }
 
-const NAMES = { boar: "Boar", wolf: "Wolf" };
+const NAMES = { boar: "Boar", wolf: "Wolf", alphaBoar: "Alpha Boar", direWolf: "Dire Wolf" };
 
 export function createMonsterRegistry() {
   return new Map();

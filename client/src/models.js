@@ -11,6 +11,7 @@ const MODEL_URLS = {
   rig_medium_general: "/models/rig_medium_general.glb",
   pig: "/models/pig.glb",
   wolf: "/models/wolf.glb",
+  shopkeeper: "/models/shopkeeper.glb",
   tree_default: "/models/nature/tree_default.glb",
   tree_pineRoundA: "/models/nature/tree_pineRoundA.glb",
   tree_oak: "/models/nature/tree_oak.glb",

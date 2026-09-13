@@ -1,12 +1,20 @@
 import { createPlayerMesh } from "./player.js";
 import { applyMonsterSnapshot, flashHit } from "./monsters.js";
+import { applyNpcSnapshot } from "./npc.js";
 import { lerp, lerpAngle, smoothingFactor } from "./interpolate.js";
 
 const WS_URL = "ws://localhost:3001/game";
 const SEND_INTERVAL = 0.1;
 const POSITION_SMOOTHING = 10;
 
-export function connectNetwork(scene, player, registry, { onDied, onRespawn, onChat, onInventory, onKicked } = {}) {
+export function connectNetwork(
+  scene,
+  player,
+  registry,
+  npcRegistry,
+  { onDied, onRespawn, onChat, onInventory, onEquipment, onShopCatalog, onZones, onKicked, onDisconnected } = {}
+) {
+  let kicked = false;
   const state = {
     ws: null,
     remotePlayers: new Map(),
@@ -31,6 +39,21 @@ export function connectNetwork(scene, player, registry, { onDied, onRespawn, onC
         state.ws.send(JSON.stringify({ type: "useItem", itemKey }));
       }
     },
+    sendEquipItem(itemKey) {
+      if (state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({ type: "equipItem", itemKey }));
+      }
+    },
+    sendUnequipItem(slot) {
+      if (state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({ type: "unequipItem", slot }));
+      }
+    },
+    sendBuyItem(itemKey) {
+      if (state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({ type: "buyItem", itemKey }));
+      }
+    },
   };
   const ws = new WebSocket(WS_URL);
   state.ws = ws;
@@ -42,6 +65,8 @@ export function connectNetwork(scene, player, registry, { onDied, onRespawn, onC
       case "welcome":
         msg.players.forEach((p) => addRemotePlayer(state, scene, p));
         applyMonsterSnapshot(scene, registry, msg.monsters);
+        applyNpcSnapshot(scene, npcRegistry, msg.npcs);
+        onZones?.(msg.zones);
         break;
       case "join":
         addRemotePlayer(state, scene, msg);
@@ -91,10 +116,17 @@ export function connectNetwork(scene, player, registry, { onDied, onRespawn, onC
       case "inventory":
         onInventory?.(msg.items);
         break;
+      case "equipment":
+        onEquipment?.(msg.slots);
+        break;
+      case "shopCatalog":
+        onShopCatalog?.(msg.items);
+        break;
       case "died":
         onDied?.();
         break;
       case "kicked":
+        kicked = true;
         onKicked?.();
         break;
       case "respawn":
@@ -103,6 +135,10 @@ export function connectNetwork(scene, player, registry, { onDied, onRespawn, onC
         onRespawn?.();
         break;
     }
+  });
+
+  ws.addEventListener("close", () => {
+    if (!kicked) onDisconnected?.();
   });
 
   return state;

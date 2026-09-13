@@ -1,0 +1,36 @@
+/**
+ * Per-character equipped items — one row per occupied slot. Equipping/
+ * unequipping the corresponding inventory_items row is handled by the
+ * caller (see handleEquipItem/handleUnequipItem in app.bxs); this service
+ * is pure storage, matching InventoryService's role split.
+ */
+class {
+
+	function list( characterId ) {
+		var rows = queryExecute(
+			"SELECT slot, item_key FROM equipment WHERE character_id = :characterId",
+			{ characterId: arguments.characterId }
+		);
+		var slots = [];
+		for ( var i = 1; i <= rows.recordCount; i++ ) {
+			slots.append( { slot: rows.slot[ i ], key: rows.item_key[ i ] } );
+		}
+		return slots;
+	}
+
+	function equip( characterId, slot, itemKey ) {
+		queryExecute(
+			"INSERT INTO equipment (character_id, slot, item_key) VALUES (:characterId, :slot, :itemKey)
+			 ON DUPLICATE KEY UPDATE item_key = :itemKey",
+			{ characterId: arguments.characterId, slot: arguments.slot, itemKey: arguments.itemKey }
+		);
+	}
+
+	function unequip( characterId, slot ) {
+		queryExecute(
+			"DELETE FROM equipment WHERE character_id = :characterId AND slot = :slot",
+			{ characterId: arguments.characterId, slot: arguments.slot }
+		);
+	}
+
+}

@@ -3,7 +3,7 @@ const API_BASE = "http://localhost:3001";
 export async function checkSession() {
   const res = await fetch(`${API_BASE}/api/me`, { credentials: "include" });
   const data = await res.json();
-  return data.ok ? data.character : null;
+  return data.ok ? data.characters : null;
 }
 
 export async function logout() {
@@ -51,7 +51,7 @@ export function showAuthScreen() {
         return;
       }
       overlay.remove();
-      resolve(data.character);
+      resolve(data.characters);
     }
 
     form.addEventListener("submit", (e) => {
