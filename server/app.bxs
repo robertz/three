@@ -1,0 +1,511 @@
+/**
+ * Game server entry point. Run with:
+ *   ./start.sh
+ * Requires the "three" MySQL database (see db/schema.sql) and the
+ * datasource configured in boxlang.json.
+ */
+app = boxExpress()
+javaMath = createObject( "java", "java.lang.Math" )
+
+authService = new models.AuthService()
+characterService = new models.CharacterService()
+inventoryService = new models.InventoryService()
+
+app.use( boxExpressCors( { origin: "http://localhost:5173", credentials: true } ) )
+app.use( boxExpressJSON() )
+app.use( boxExpressStatic( expandPath( "../client/dist" ) ) )
+
+app.get( "/health", ( req, res ) => {
+	res.json( { ok: true } )
+} )
+
+// ── Accounts ─────────────────────────────────────────────────────────────
+
+function startSession( res, accountId ) {
+	var token = authService.createSession( accountId )
+	characterService.ensure( accountId )
+	res.cookie( "session", token, { maxAge: 30 * 24 * 60 * 60 } )
+}
+
+app.post( "/api/register", ( req, res ) => {
+	try {
+		var accountId = authService.register( req.body.username ?: "", req.body.password ?: "" )
+		startSession( res, accountId )
+		res.json( { ok: true, character: characterService.load( accountId ) } )
+	} catch ( any e ) {
+		res.status( 400 ).json( { ok: false, error: e.message } )
+	}
+} )
+
+app.post( "/api/login", ( req, res ) => {
+	try {
+		var accountId = authService.login( req.body.username ?: "", req.body.password ?: "" )
+		startSession( res, accountId )
+		res.json( { ok: true, character: characterService.load( accountId ) } )
+	} catch ( any e ) {
+		res.status( 401 ).json( { ok: false, error: e.message } )
+	}
+} )
+
+app.get( "/api/me", ( req, res ) => {
+	var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
+	if ( !accountId ) {
+		return res.status( 401 ).json( { ok: false } )
+	}
+	res.json( { ok: true, character: characterService.load( accountId ) } )
+} )
+
+app.post( "/api/logout", ( req, res ) => {
+	authService.destroySession( req.cookies.session ?: "" )
+	res.cookie( "session", "", { maxAge: 0 } )
+	res.json( { ok: true } )
+} )
+
+// ── World constants ────────────────────────────────────────────────────────
+
+WORLD_BOUNDS = 99
+WANDER_RADIUS = 6
+TICK_SECONDS = 0.2
+MONSTER_RESPAWN_DELAY = 6
+PLAYER_RESPAWN_DELAY = 3
+DEATH_XP_PENALTY = 0.1
+ATTACK_RANGE = 3
+ATTACK_COOLDOWN = 1
+SKILL_COOLDOWN = 4
+SKILL_MULTIPLIER = 2
+SAVE_INTERVAL_SECONDS = 5
+CHAT_MAX_LENGTH = 200
+
+MONSTER_TYPES = {
+	poring: {
+		name: "Poring", hp: 30, damage: 0, xpReward: 10, zenyMin: 5, zenyMax: 15,
+		aggressive: false, aggroRadius: 0, attackRange: 1.2, attackCooldown: 1.5, speed: 1.2, baseY: 0.6,
+		dropItem: "apple", dropChance: 0.3
+	},
+	wolf: {
+		name: "Wolf", hp: 50, damage: 8, xpReward: 25, zenyMin: 15, zenyMax: 30,
+		aggressive: true, aggroRadius: 8, attackRange: 1.6, attackCooldown: 1.5, speed: 2.6, baseY: 0.5,
+		dropItem: "wolfFang", dropChance: 0.4
+	}
+}
+
+ITEM_TYPES = {
+	apple: { name: "Apple", usable: true, healAmount: 20 },
+	wolfFang: { name: "Wolf Fang", usable: false, healAmount: 0 }
+}
+
+// ── Players (connections) ───────────────────────────────────────────────────
+
+players = {}
+nextPlayerId = 0
+
+function otherPlayers( excludeId ) {
+	var list = []
+	for ( var id in players ) {
+		if ( id != excludeId ) {
+			list.append( { id: id, x: players[ id ].x, z: players[ id ].z, rotationY: players[ id ].rotationY } )
+		}
+	}
+	return list
+}
+
+function broadcastExcept( excludeId, payload ) {
+	for ( var id in structCopy( players ) ) {
+		if ( id != excludeId && !players[ id ].connection.isClosed() ) {
+			players[ id ].connection.send( payload )
+		}
+	}
+}
+
+function broadcastAll( payload ) {
+	for ( var id in structCopy( players ) ) {
+		if ( !players[ id ].connection.isClosed() ) {
+			players[ id ].connection.send( payload )
+		}
+	}
+}
+
+function sendToPlayer( playerId, payload ) {
+	if ( structKeyExists( players, playerId ) && !players[ playerId ].connection.isClosed() ) {
+		players[ playerId ].connection.send( payload )
+	}
+}
+
+function kickExistingConnection( accountId ) {
+	for ( var pid in structCopy( players ) ) {
+		if ( players[ pid ].accountId == accountId ) {
+			persist( pid )
+			sendToPlayer( pid, { type: "kicked" } )
+			players[ pid ].connection.close()
+			structDelete( players, pid )
+			broadcastExcept( pid, { type: "leave", id: pid } )
+		}
+	}
+}
+
+function persist( playerId ) {
+	var p = players[ playerId ]
+	characterService.save( p.accountId, {
+		x: p.x, z: p.z, rotationY: p.rotationY, level: p.level, hp: p.hp, maxHp: p.maxHp,
+		xp: p.xp, xpToNext: p.xpToNext, attackDamage: p.attackDamage, zeny: p.zeny
+	} )
+}
+
+function handleChat( playerId, text ) {
+	var clean = trim( text ?: "" )
+	if ( !len( clean ) ) {
+		return
+	}
+	if ( len( clean ) > CHAT_MAX_LENGTH ) {
+		clean = left( clean, CHAT_MAX_LENGTH )
+	}
+	broadcastAll( { type: "chat", id: playerId, username: players[ playerId ].username, text: clean } )
+}
+
+function sendStats( playerId ) {
+	var p = players[ playerId ]
+	sendToPlayer( playerId, {
+		type: "stats", level: p.level, hp: p.hp, maxHp: p.maxHp, xp: p.xp,
+		xpToNext: p.xpToNext, attackDamage: p.attackDamage, zeny: p.zeny
+	} )
+}
+
+function sendInventory( playerId ) {
+	var p = players[ playerId ]
+	var items = []
+	for ( var row in inventoryService.list( p.accountId ) ) {
+		var itemType = ITEM_TYPES[ row.key ]
+		items.append( { key: row.key, name: itemType.name, usable: itemType.usable, quantity: row.quantity } )
+	}
+	sendToPlayer( playerId, { type: "inventory", items: items } )
+}
+
+function handleUseItem( playerId, itemKey ) {
+	var p = players[ playerId ]
+	if ( !structKeyExists( ITEM_TYPES, itemKey ) ) {
+		return
+	}
+	var itemType = ITEM_TYPES[ itemKey ]
+	if ( !itemType.usable || !inventoryService.hasItem( p.accountId, itemKey ) ) {
+		return
+	}
+
+	inventoryService.removeItem( p.accountId, itemKey )
+	p.hp = min( p.maxHp, p.hp + itemType.healAmount )
+	sendStats( playerId )
+	sendInventory( playerId )
+	persist( playerId )
+}
+
+function grantXp( playerId, amount ) {
+	var p = players[ playerId ]
+	p.xp += amount
+	while ( p.xp >= p.xpToNext ) {
+		p.xp -= p.xpToNext
+		p.level += 1
+		p.maxHp += 20
+		p.hp = p.maxHp
+		p.attackDamage += 3
+		p.xpToNext = round( p.xpToNext * 1.3 )
+	}
+}
+
+function damagePlayer( playerId, amount ) {
+	var p = players[ playerId ]
+	p.hp -= amount
+	if ( p.hp <= 0 ) {
+		p.hp = 0
+		p.xp = max( 0, p.xp - int( p.xp * DEATH_XP_PENALTY ) )
+		sendStats( playerId )
+		sendToPlayer( playerId, { type: "died" } )
+		p.respawning = true
+		p.respawnAt = getTickCount() / 1000 + PLAYER_RESPAWN_DELAY
+	} else {
+		sendStats( playerId )
+	}
+}
+
+// ── Monsters ─────────────────────────────────────────────────────────────
+
+monsters = {}
+nextMonsterId = 0
+
+function randomOffset( bounds ) {
+	return ( rand() - 0.5 ) * 2 * bounds
+}
+
+function spawnMonster( typeKey ) {
+	nextMonsterId++
+	var id = "m#nextMonsterId#"
+	var type = MONSTER_TYPES[ typeKey ]
+	var homeX = randomOffset( WORLD_BOUNDS * 0.8 )
+	var homeZ = randomOffset( WORLD_BOUNDS * 0.8 )
+	monsters[ id ] = {
+		id: id, type: typeKey, name: type.name,
+		x: homeX, z: homeZ, rotationY: 0,
+		hp: type.hp, maxHp: type.hp, damage: type.damage,
+		xpReward: type.xpReward, zenyMin: type.zenyMin, zenyMax: type.zenyMax,
+		aggressive: type.aggressive, aggroRadius: type.aggroRadius,
+		attackRange: type.attackRange, attackCooldown: type.attackCooldown,
+		speed: type.speed, baseY: type.baseY,
+		dropItem: type.dropItem, dropChance: type.dropChance,
+		homeX: homeX, homeZ: homeZ,
+		wanderTargetX: homeX, wanderTargetZ: homeZ, wanderTimer: 0,
+		attackTimer: 0, state: "wander", targetPlayerId: "",
+		alive: true, respawnAt: 0
+	}
+}
+
+for ( i = 1; i <= 8; i++ ) {
+	spawnMonster( "poring" )
+}
+for ( i = 1; i <= 4; i++ ) {
+	spawnMonster( "wolf" )
+}
+
+function monsterSnapshot() {
+	var list = []
+	for ( var id in monsters ) {
+		var m = monsters[ id ]
+		list.append( { id: id, type: m.type, x: m.x, z: m.z, rotationY: m.rotationY, hp: m.hp, maxHp: m.maxHp, alive: m.alive } )
+	}
+	return list
+}
+
+function handleAttack( playerId, targetId, isSkill ) {
+	var p = players[ playerId ]
+	if ( p.respawning ?: false ) {
+		return
+	}
+	if ( !structKeyExists( monsters, targetId ) ) {
+		return
+	}
+	var m = monsters[ targetId ]
+	if ( !m.alive ) {
+		return
+	}
+
+	var now = getTickCount() / 1000
+	var readyAt = isSkill ? ( p.skillReadyAt ?: 0 ) : ( p.attackReadyAt ?: 0 )
+	if ( now < readyAt ) {
+		return
+	}
+
+	var dist = javaMath.sqrt( ( ( p.x - m.x ) * ( p.x - m.x ) ) + ( ( p.z - m.z ) * ( p.z - m.z ) ) )
+	if ( dist > ATTACK_RANGE ) {
+		return
+	}
+
+	if ( isSkill ) {
+		p.skillReadyAt = now + SKILL_COOLDOWN
+	} else {
+		p.attackReadyAt = now + ATTACK_COOLDOWN
+	}
+
+	m.hp -= p.attackDamage * ( isSkill ? SKILL_MULTIPLIER : 1 )
+	if ( m.aggressive ) {
+		m.state = "chase"
+		m.targetPlayerId = playerId
+	}
+
+	if ( m.hp <= 0 ) {
+		m.hp = 0
+		m.alive = false
+		m.respawnAt = now + MONSTER_RESPAWN_DELAY
+		m.state = "wander"
+		m.targetPlayerId = ""
+
+		grantXp( playerId, m.xpReward )
+		p.zeny += m.zenyMin + int( rand() * ( m.zenyMax - m.zenyMin + 1 ) )
+		sendStats( playerId )
+
+		if ( rand() < m.dropChance ) {
+			inventoryService.addItem( p.accountId, m.dropItem )
+			sendInventory( playerId )
+		}
+
+		persist( playerId )
+	}
+
+	broadcastAll( { type: "monsterUpdate", id: targetId, hp: m.hp, alive: m.alive } )
+}
+
+function tickPlayerRespawns() {
+	var now = getTickCount() / 1000
+	for ( var pid in structCopy( players ) ) {
+		var p = players[ pid ]
+		if ( ( p.respawning ?: false ) && now >= p.respawnAt ) {
+			p.respawning = false
+			p.hp = p.maxHp
+			p.x = 0
+			p.z = 0
+			p.rotationY = 0
+			sendToPlayer( pid, { type: "respawn", x: 0, z: 0, rotationY: 0 } )
+			sendStats( pid )
+			broadcastExcept( pid, { type: "move", id: pid, x: 0, z: 0, rotationY: 0 } )
+		}
+	}
+}
+
+function tickMonsterAI() {
+	for ( var mid in monsters ) {
+		var m = monsters[ mid ]
+
+		if ( !m.alive ) {
+			if ( getTickCount() / 1000 >= m.respawnAt ) {
+				m.alive = true
+				m.hp = m.maxHp
+				m.x = m.homeX
+				m.z = m.homeZ
+				m.state = "wander"
+				m.targetPlayerId = ""
+			}
+			continue
+		}
+
+		if ( m.aggressive && m.state != "chase" ) {
+			var nearestId = ""
+			var nearestDist = m.aggroRadius
+			for ( var pid in players ) {
+				var p = players[ pid ]
+				if ( p.respawning ?: false ) {
+					continue
+				}
+				var d = javaMath.sqrt( ( ( p.x - m.x ) * ( p.x - m.x ) ) + ( ( p.z - m.z ) * ( p.z - m.z ) ) )
+				if ( d <= nearestDist ) {
+					nearestDist = d
+					nearestId = pid
+				}
+			}
+			if ( len( nearestId ) ) {
+				m.state = "chase"
+				m.targetPlayerId = nearestId
+			}
+		}
+
+		if ( m.state == "chase" ) {
+			if ( !structKeyExists( players, m.targetPlayerId ) || ( players[ m.targetPlayerId ].respawning ?: false ) ) {
+				m.state = "wander"
+				m.targetPlayerId = ""
+			} else {
+				var target = players[ m.targetPlayerId ]
+				var dx = target.x - m.x
+				var dz = target.z - m.z
+				var dist = javaMath.sqrt( ( ( dx ) * ( dx ) ) + ( ( dz ) * ( dz ) ) )
+				if ( dist > m.aggroRadius * 1.5 ) {
+					m.state = "wander"
+					m.targetPlayerId = ""
+				} else if ( dist > m.attackRange * 0.8 ) {
+					m.x += ( dx / dist ) * m.speed * TICK_SECONDS
+					m.z += ( dz / dist ) * m.speed * TICK_SECONDS
+					m.rotationY = javaMath.atan2( dx / dist, dz / dist )
+				} else {
+					m.attackTimer -= TICK_SECONDS
+					if ( m.attackTimer <= 0 ) {
+						m.attackTimer = m.attackCooldown
+						damagePlayer( m.targetPlayerId, m.damage )
+					}
+				}
+			}
+		} else {
+			m.wanderTimer -= TICK_SECONDS
+			if ( m.wanderTimer <= 0 ) {
+				m.wanderTargetX = m.homeX + randomOffset( WANDER_RADIUS )
+				m.wanderTargetZ = m.homeZ + randomOffset( WANDER_RADIUS )
+				m.wanderTimer = 2 + rand() * 3
+			}
+			var dx = m.wanderTargetX - m.x
+			var dz = m.wanderTargetZ - m.z
+			var dist = javaMath.sqrt( ( ( dx ) * ( dx ) ) + ( ( dz ) * ( dz ) ) )
+			if ( dist > 0.1 ) {
+				m.x += ( dx / dist ) * m.speed * 0.5 * TICK_SECONDS
+				m.z += ( dz / dist ) * m.speed * 0.5 * TICK_SECONDS
+				m.rotationY = javaMath.atan2( dx / dist, dz / dist )
+			}
+		}
+	}
+}
+
+app.schedule( TICK_SECONDS * 1000, () => {
+	tickPlayerRespawns()
+	tickMonsterAI()
+	broadcastAll( { type: "monsters", list: monsterSnapshot() } )
+} )
+
+// ── Real-time player sync ───────────────────────────────────────────────
+
+app.ws( "/game", ( connection ) => {
+	var accountId = authService.accountIdForToken( connection.cookies.session ?: "" )
+	if ( !accountId ) {
+		connection.close()
+		return
+	}
+
+	kickExistingConnection( accountId )
+
+	nextPlayerId++
+	var playerId = "p#nextPlayerId#"
+	var saved = characterService.load( accountId )
+	saved[ "accountId" ] = accountId
+	saved[ "connection" ] = connection
+	saved[ "lastSaveAt" ] = 0
+	saved[ "respawning" ] = false
+	saved[ "attackReadyAt" ] = 0
+	saved[ "skillReadyAt" ] = 0
+	saved[ "username" ] = authService.usernameForAccountId( accountId )
+	players[ playerId ] = saved
+
+	connection.send( { type: "welcome", id: playerId, players: otherPlayers( playerId ), monsters: monsterSnapshot() } )
+	broadcastExcept( playerId, { type: "join", id: playerId, x: saved.x, z: saved.z, rotationY: saved.rotationY } )
+	sendInventory( playerId )
+
+	connection.onMessage( ( text ) => {
+		var data = JSONDeserialize( text )
+		var p = players[ playerId ]
+
+		if ( data.type == "chat" ) {
+			handleChat( playerId, data.text )
+			return
+		}
+
+		if ( p.respawning ) {
+			return
+		}
+
+		if ( data.type == "move" ) {
+			p.x = data.x
+			p.z = data.z
+			p.rotationY = data.rotationY
+			broadcastExcept( playerId, { type: "move", id: playerId, x: data.x, z: data.z, rotationY: data.rotationY } )
+		} else if ( data.type == "attack" ) {
+			handleAttack( playerId, data.targetId, false )
+		} else if ( data.type == "skill" ) {
+			handleAttack( playerId, data.targetId, true )
+		} else if ( data.type == "useItem" ) {
+			handleUseItem( playerId, data.itemKey )
+		}
+
+		var now = getTickCount() / 1000
+		if ( now - p.lastSaveAt >= SAVE_INTERVAL_SECONDS ) {
+			p.lastSaveAt = now
+			persist( playerId )
+		}
+	} )
+
+	connection.onClose( ( code, reason ) => {
+		if ( structKeyExists( players, playerId ) ) {
+			persist( playerId )
+			structDelete( players, playerId )
+		}
+		broadcastExcept( playerId, { type: "leave", id: playerId } )
+	} )
+} )
+
+app.use( ( err, req, res, next ) => {
+	writeLog( text = "Unhandled error: " & err.message, log = "application" )
+	res.status( 500 ).json( { error: true, message: err.message } )
+} )
+
+app.listen( 3001, ( port ) => {
+	println( "Game server listening on http://localhost:#port#" )
+} )

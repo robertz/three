@@ -1,0 +1,131 @@
+/**
+ * Registration/login + session tokens. BoxLang has no native bcrypt, so
+ * passwords are hashed with PBKDF2WithHmacSHA256 via direct Java interop
+ * (JDK-only, no extra dependency) — same approach as dnd-game-v2's
+ * AuthService.bx.
+ *
+ * Sessions here are a plain DB-backed token table rather than BoxLang's
+ * native `session` scope: app.ws() routes sit outside boxlang-express's
+ * middleware chain entirely (no Session middleware runs for a WebSocket
+ * upgrade), so the WS handler has to authenticate by reading the session
+ * cookie itself and looking the token up directly — this table is what it
+ * looks up against.
+ */
+class {
+
+	PBKDF2_ITERATIONS = 100000;
+	PBKDF2_KEY_LENGTH = 256;
+
+	function register( username, password ) {
+		var cleanUsername = trim( arguments.username );
+		if ( !len( cleanUsername ) || len( cleanUsername ) > 50 ) {
+			throw( type = "InvalidUsername", message = "Username must be 1-50 characters." );
+		}
+		if ( len( arguments.password ) < 8 ) {
+			throw( type = "InvalidPassword", message = "Password must be at least 8 characters." );
+		}
+
+		try {
+			queryExecute(
+				"INSERT INTO accounts (username, password_hash) VALUES (:username, :passwordHash)",
+				{ username: cleanUsername, passwordHash: _hashPassword( arguments.password ) },
+				{ result: "local.insertResult" }
+			);
+		} catch ( database e ) {
+			if ( findNoCase( "Duplicate entry", e.message & " " & ( e.detail ?: "" ) ) ) {
+				throw( type = "UsernameTaken", message = "That username is already taken." );
+			}
+			rethrow;
+		}
+
+		return local.insertResult.generatedKey;
+	}
+
+	function login( username, password ) {
+		var cleanUsername = trim( arguments.username );
+		var rows = queryExecute(
+			"SELECT id, password_hash FROM accounts WHERE username = :username",
+			{ username: cleanUsername }
+		);
+		if ( rows.recordCount == 0 || !_verifyPassword( arguments.password, rows.password_hash[ 1 ] ) ) {
+			throw( type = "InvalidCredentials", message = "Invalid username or password." );
+		}
+		return rows.id[ 1 ];
+	}
+
+	/**
+	 * Only one valid session per account — logging in anywhere invalidates
+	 * every session token issued before it, so an old tab/device's cookie
+	 * stops working (its next /api/me or WS connect gets rejected) rather
+	 * than quietly coexisting with independent, clobbering-prone state.
+	 */
+	function createSession( accountId ) {
+		queryExecute( "DELETE FROM sessions WHERE account_id = :accountId", { accountId: arguments.accountId } );
+		var token = _randomToken();
+		queryExecute(
+			"INSERT INTO sessions (token, account_id) VALUES (:token, :accountId)",
+			{ token: token, accountId: arguments.accountId }
+		);
+		return token;
+	}
+
+	function accountIdForToken( token ) {
+		if ( !len( arguments.token ?: "" ) ) {
+			return 0;
+		}
+		var rows = queryExecute(
+			"SELECT account_id FROM sessions WHERE token = :token",
+			{ token: arguments.token }
+		);
+		return rows.recordCount ? rows.account_id[ 1 ] : 0;
+	}
+
+	function destroySession( token ) {
+		queryExecute( "DELETE FROM sessions WHERE token = :token", { token: arguments.token } );
+	}
+
+	function usernameForAccountId( accountId ) {
+		var rows = queryExecute(
+			"SELECT username FROM accounts WHERE id = :accountId",
+			{ accountId: arguments.accountId }
+		);
+		return rows.recordCount ? rows.username[ 1 ] : "";
+	}
+
+	private function _randomToken() {
+		var bytes = createObject( "java", "java.lang.reflect.Array" ).newInstance( createObject( "java", "java.lang.Byte" ).TYPE, 32 );
+		createObject( "java", "java.security.SecureRandom" ).nextBytes( bytes );
+		return reReplace( binaryEncode( bytes, "base64" ), "[^A-Za-z0-9]", "", "all" );
+	}
+
+	private function _hashPassword( password ) {
+		var random = createObject( "java", "java.security.SecureRandom" );
+		var salt = createObject( "java", "java.lang.reflect.Array" ).newInstance( createObject( "java", "java.lang.Byte" ).TYPE, 16 );
+		random.nextBytes( salt );
+		var hash = _pbkdf2( arguments.password, salt );
+		return PBKDF2_ITERATIONS & ":" & binaryEncode( salt, "base64" ) & ":" & binaryEncode( hash, "base64" );
+	}
+
+	private function _verifyPassword( password, storedHash ) {
+		var parts = listToArray( arguments.storedHash, ":" );
+		if ( parts.len() != 3 ) {
+			return false;
+		}
+		var salt = binaryDecode( parts[ 2 ], "base64" );
+		var expectedHash = binaryDecode( parts[ 3 ], "base64" );
+		var actualHash = _pbkdf2( arguments.password, salt, val( parts[ 1 ] ) );
+		return _constantTimeEquals( expectedHash, actualHash );
+	}
+
+	private function _pbkdf2( password, salt, iterations = PBKDF2_ITERATIONS ) {
+		var factory = createObject( "java", "javax.crypto.SecretKeyFactory" ).getInstance( "PBKDF2WithHmacSHA256" );
+		var spec = createObject( "java", "javax.crypto.spec.PBEKeySpec" )
+			.init( arguments.password.toCharArray(), arguments.salt, arguments.iterations, PBKDF2_KEY_LENGTH );
+		return factory.generateSecret( spec ).getEncoded();
+	}
+
+	private function _constantTimeEquals( a, b ) {
+		return createObject( "java", "java.security.MessageDigest" ).isEqual( arguments.a, arguments.b );
+	}
+
+}

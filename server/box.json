@@ -1,0 +1,12 @@
+{
+    "name":"three-game-server",
+    "version":"0.1.0",
+    "author":"Robert Zehnder",
+    "private":true,
+    "dependencies":{
+        "boxlang-express":"^0.2.11"
+    },
+    "installPaths":{
+        "boxlang-express":"boxlang_modules/boxlang-express/"
+    }
+}

@@ -1,0 +1,52 @@
+/**
+ * Loads/saves the one persisted character row per account. No multi-
+ * character support yet — one row is created on first login/register and
+ * reused from then on.
+ */
+class {
+
+	function ensure( accountId ) {
+		queryExecute(
+			"INSERT IGNORE INTO characters (account_id) VALUES (:accountId)",
+			{ accountId: arguments.accountId }
+		);
+	}
+
+	function load( accountId ) {
+		var rows = queryExecute(
+			"SELECT x, z, rotation_y, level, hp, max_hp, xp, xp_to_next, attack_damage, zeny
+			 FROM characters WHERE account_id = :accountId",
+			{ accountId: arguments.accountId }
+		);
+		return {
+			x: rows.x[ 1 ],
+			z: rows.z[ 1 ],
+			rotationY: rows.rotation_y[ 1 ],
+			level: rows.level[ 1 ],
+			hp: rows.hp[ 1 ],
+			maxHp: rows.max_hp[ 1 ],
+			xp: rows.xp[ 1 ],
+			xpToNext: rows.xp_to_next[ 1 ],
+			attackDamage: rows.attack_damage[ 1 ],
+			zeny: rows.zeny[ 1 ]
+		};
+	}
+
+	function save( accountId, state ) {
+		queryExecute(
+			"UPDATE characters SET
+				x = :x, z = :z, rotation_y = :rotationY, level = :level, hp = :hp,
+				max_hp = :maxHp, xp = :xp, xp_to_next = :xpToNext,
+				attack_damage = :attackDamage, zeny = :zeny
+			 WHERE account_id = :accountId",
+			{
+				x: arguments.state.x, z: arguments.state.z, rotationY: arguments.state.rotationY,
+				level: arguments.state.level, hp: arguments.state.hp, maxHp: arguments.state.maxHp,
+				xp: arguments.state.xp, xpToNext: arguments.state.xpToNext,
+				attackDamage: arguments.state.attackDamage, zeny: arguments.state.zeny,
+				accountId: arguments.accountId
+			}
+		);
+	}
+
+}

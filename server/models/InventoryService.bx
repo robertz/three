@@ -1,0 +1,48 @@
+/**
+ * Per-account item storage. Quantities only — no item instances/uniques,
+ * no equipment slots yet, just a stackable count per item key.
+ */
+class {
+
+	function addItem( accountId, itemKey, quantity = 1 ) {
+		queryExecute(
+			"INSERT INTO inventory_items (account_id, item_key, quantity)
+			 VALUES (:accountId, :itemKey, :quantity)
+			 ON DUPLICATE KEY UPDATE quantity = quantity + :quantity",
+			{ accountId: arguments.accountId, itemKey: arguments.itemKey, quantity: arguments.quantity }
+		);
+	}
+
+	function removeItem( accountId, itemKey, quantity = 1 ) {
+		queryExecute(
+			"UPDATE inventory_items SET quantity = quantity - :quantity
+			 WHERE account_id = :accountId AND item_key = :itemKey AND quantity >= :quantity",
+			{ accountId: arguments.accountId, itemKey: arguments.itemKey, quantity: arguments.quantity }
+		);
+		queryExecute(
+			"DELETE FROM inventory_items WHERE account_id = :accountId AND quantity <= 0",
+			{ accountId: arguments.accountId }
+		);
+	}
+
+	function hasItem( accountId, itemKey, quantity = 1 ) {
+		var rows = queryExecute(
+			"SELECT quantity FROM inventory_items WHERE account_id = :accountId AND item_key = :itemKey",
+			{ accountId: arguments.accountId, itemKey: arguments.itemKey }
+		);
+		return rows.recordCount > 0 && rows.quantity[ 1 ] >= arguments.quantity;
+	}
+
+	function list( accountId ) {
+		var rows = queryExecute(
+			"SELECT item_key, quantity FROM inventory_items WHERE account_id = :accountId AND quantity > 0",
+			{ accountId: arguments.accountId }
+		);
+		var items = [];
+		for ( var i = 1; i <= rows.recordCount; i++ ) {
+			items.append( { key: rows.item_key[ i ], quantity: rows.quantity[ i ] } );
+		}
+		return items;
+	}
+
+}
