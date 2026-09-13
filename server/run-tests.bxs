@@ -1,0 +1,15 @@
+/**
+ * Runs the server test suite headlessly (no HTTP server needed to start it —
+ * AccountRoutesSpec starts its own on a throwaway port) and exits non-zero
+ * on any failure/error, for CI/scripting use.
+ *   boxlang --bx-config boxlang.json run-tests.bxs
+ * Requires the "three" MySQL database (see db/schema.sql) — specs create
+ * and clean up their own throwaway accounts/characters against it.
+ */
+tb = new "testbox.system.TestBox"( directory = "tests.specs", reporter = "text" )
+println( tb.run() )
+
+result = tb.getResult()
+if ( result.getTotalFail() > 0 || result.getTotalError() > 0 ) {
+	createObject( "java", "java.lang.System" ).exit( 1 )
+}

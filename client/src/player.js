@@ -41,9 +41,16 @@ export function updatePlayer(player, delta, world) {
     nextPos.x = THREE.MathUtils.clamp(nextPos.x, -world.bounds, world.bounds);
     nextPos.z = THREE.MathUtils.clamp(nextPos.z, -world.bounds, world.bounds);
 
-    const blocked = world.obstacles.some(
-      (obstacle) => obstacle.position.distanceTo(nextPos) < world.obstacleRadius + PLAYER_RADIUS
-    );
+    // Horizontal distance only — obstacle.position.y varies (the horizon
+    // mountains are sunk well below ground to hide their flat base; see
+    // world.js), and THREE.Vector3.distanceTo's 3D distance was folding that
+    // vertical offset into the check, letting the player get closer
+    // horizontally than the intended radius before it finally tripped.
+    const blocked = world.obstacles.some((obstacle) => {
+      const dx = obstacle.position.x - nextPos.x;
+      const dz = obstacle.position.z - nextPos.z;
+      return Math.hypot(dx, dz) < obstacle.radius + PLAYER_RADIUS;
+    });
 
     if (!blocked) {
       player.position.copy(nextPos);

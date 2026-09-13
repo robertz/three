@@ -1,6 +1,7 @@
 import { createPlayerMesh } from "./player.js";
 import { applyMonsterSnapshot, flashHit } from "./monsters.js";
 import { applyNpcSnapshot } from "./npc.js";
+import { applyWorldSnapshot } from "./world.js";
 import { lerp, lerpAngle, smoothingFactor } from "./interpolate.js";
 
 const WS_URL = "ws://localhost:3001/game";
@@ -12,6 +13,7 @@ export function connectNetwork(
   player,
   registry,
   npcRegistry,
+  world,
   { onDied, onRespawn, onChat, onInventory, onEquipment, onShopCatalog, onZones, onKicked, onDisconnected } = {}
 ) {
   let kicked = false;
@@ -66,6 +68,7 @@ export function connectNetwork(
         msg.players.forEach((p) => addRemotePlayer(state, scene, p));
         applyMonsterSnapshot(scene, registry, msg.monsters);
         applyNpcSnapshot(scene, npcRegistry, msg.npcs);
+        applyWorldSnapshot(scene, world, msg.mountains, msg.props);
         onZones?.(msg.zones);
         break;
       case "join":

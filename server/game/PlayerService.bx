@@ -1,0 +1,380 @@
+/**
+ * Owns the live `players` struct (one entry per connected socket, keyed by
+ * a per-connection playerId) and everything that operates primarily on
+ * player state: connection bookkeeping/broadcasting, stat persistence,
+ * inventory/equipment/shop message handlers, and chat. MonsterService
+ * depends on this (reads/mutates player state during combat); this class
+ * never depends on MonsterService.
+ */
+class {
+
+	function init( authService, characterService, inventoryService, equipmentService, gameConfig ) {
+		variables.authService = arguments.authService
+		variables.characterService = arguments.characterService
+		variables.inventoryService = arguments.inventoryService
+		variables.equipmentService = arguments.equipmentService
+		variables.gameConfig = arguments.gameConfig
+		variables.javaMath = createObject( "java", "java.lang.Math" )
+
+		variables.players = {}
+		variables.nextPlayerId = 0
+
+		return this
+	}
+
+	function getPlayers() {
+		return variables.players
+	}
+
+	// ── Connection lifecycle ─────────────────────────────────────────────────
+
+	function connect( connection, accountId, characterId ) {
+		kickExistingConnection( accountId )
+
+		variables.nextPlayerId++
+		var playerId = "p#variables.nextPlayerId#"
+		var saved = variables.characterService.load( characterId )
+		saved[ "accountId" ] = accountId
+		saved[ "characterId" ] = characterId
+		saved[ "connection" ] = connection
+		saved[ "lastSaveAt" ] = 0
+		saved[ "respawning" ] = false
+		saved[ "attackReadyAt" ] = 0
+		saved[ "skillReadyAt" ] = 0
+		saved[ "username" ] = variables.authService.usernameForAccountId( accountId )
+		saved[ "baseAttackDamage" ] = saved.attackDamage
+		saved[ "baseMaxHp" ] = saved.maxHp
+		saved[ "equipment" ] = { weapon: "", helmet: "", chest: "", trinket: "" }
+		for ( var row in variables.equipmentService.list( characterId ) ) {
+			saved.equipment[ row.slot ] = row.key
+		}
+		variables.players[ playerId ] = saved
+		recomputeEffectiveStats( playerId )
+
+		return playerId
+	}
+
+	function disconnect( playerId ) {
+		if ( structKeyExists( variables.players, playerId ) ) {
+			persist( playerId )
+			structDelete( variables.players, playerId )
+		}
+		broadcastExcept( playerId, { type: "leave", id: playerId } )
+	}
+
+	function otherPlayers( excludeId ) {
+		var list = []
+		for ( var id in variables.players ) {
+			if ( id != excludeId ) {
+				list.append( { id: id, x: variables.players[ id ].x, z: variables.players[ id ].z, rotationY: variables.players[ id ].rotationY } )
+			}
+		}
+		return list
+	}
+
+	// ── Messaging ────────────────────────────────────────────────────────────
+
+	// A connection can go stuck/unresponsive (e.g. its socket died without the
+	// framework noticing) without isClosed() reporting it — send() then blocks
+	// on an internal lock until it times out and throws. Left uncaught, that
+	// exception would abort whatever loop or onConnect flow was mid-broadcast,
+	// silently dropping messages to every OTHER player queued after the bad one
+	// too. Isolate each send so one dead connection can't jam the rest.
+	function safeSend( playerId, payload ) {
+		try {
+			variables.players[ playerId ].connection.send( payload )
+		} catch ( any e ) {
+			structDelete( variables.players, playerId )
+		}
+	}
+
+	function broadcastExcept( excludeId, payload ) {
+		for ( var id in structCopy( variables.players ) ) {
+			if ( id != excludeId && structKeyExists( variables.players, id ) && !variables.players[ id ].connection.isClosed() ) {
+				safeSend( id, payload )
+			}
+		}
+	}
+
+	function broadcastAll( payload ) {
+		for ( var id in structCopy( variables.players ) ) {
+			if ( structKeyExists( variables.players, id ) && !variables.players[ id ].connection.isClosed() ) {
+				safeSend( id, payload )
+			}
+		}
+	}
+
+	function sendToPlayer( playerId, payload ) {
+		if ( structKeyExists( variables.players, playerId ) && !variables.players[ playerId ].connection.isClosed() ) {
+			safeSend( playerId, payload )
+		}
+	}
+
+	function kickExistingConnection( accountId ) {
+		for ( var pid in structCopy( variables.players ) ) {
+			if ( variables.players[ pid ].accountId == accountId ) {
+				persist( pid )
+				sendToPlayer( pid, { type: "kicked" } )
+				variables.players[ pid ].connection.close()
+				structDelete( variables.players, pid )
+				broadcastExcept( pid, { type: "leave", id: pid } )
+			}
+		}
+	}
+
+	// ── Persistence / stats ──────────────────────────────────────────────────
+
+	function persist( playerId ) {
+		var p = variables.players[ playerId ]
+		// Persist BASE stats, not the equipment-boosted effective ones — saving
+		// p.attackDamage/p.maxHp here would permanently bake gear bonuses into
+		// progression on every save/load cycle. hp is clamped to baseMaxHp so
+		// the stored row never shows hp > max_hp (max_hp in the DB is always
+		// the base value).
+		variables.characterService.save( p.characterId, {
+			x: p.x, z: p.z, rotationY: p.rotationY, level: p.level,
+			hp: min( p.hp, p.baseMaxHp ), maxHp: p.baseMaxHp,
+			xp: p.xp, xpToNext: p.xpToNext, attackDamage: p.baseAttackDamage, gold: p.gold
+		} )
+	}
+
+	function maybeAutosave( playerId ) {
+		var p = variables.players[ playerId ]
+		var now = getTickCount() / 1000
+		if ( now - p.lastSaveAt >= variables.gameConfig.getSaveIntervalSeconds() ) {
+			p.lastSaveAt = now
+			persist( playerId )
+		}
+	}
+
+	function sendStats( playerId ) {
+		var p = variables.players[ playerId ]
+		sendToPlayer( playerId, {
+			type: "stats", level: p.level, hp: p.hp, maxHp: p.maxHp, xp: p.xp,
+			xpToNext: p.xpToNext, attackDamage: p.attackDamage, gold: p.gold
+		} )
+	}
+
+	// Recomputes effective (combat/HUD-facing) attackDamage/maxHp as base stats
+	// (persisted, leveled up via grantXp) plus the sum of equipped items'
+	// bonuses. Called after connect, level-up, and any equip/unequip.
+	function recomputeEffectiveStats( playerId ) {
+		var p = variables.players[ playerId ]
+		var itemTypes = variables.gameConfig.getItemTypes()
+		var bonusDamage = 0
+		var bonusMaxHp = 0
+		for ( var slot in structCopy( p.equipment ) ) {
+			var itemKey = p.equipment[ slot ]
+			if ( len( itemKey ) && structKeyExists( itemTypes, itemKey ) ) {
+				bonusDamage += itemTypes[ itemKey ].bonusAttackDamage
+				bonusMaxHp += itemTypes[ itemKey ].bonusMaxHp
+			}
+		}
+		p.attackDamage = p.baseAttackDamage + bonusDamage
+		p.maxHp = p.baseMaxHp + bonusMaxHp
+		if ( p.hp > p.maxHp ) {
+			p.hp = p.maxHp
+		}
+	}
+
+	function grantXp( playerId, amount ) {
+		var p = variables.players[ playerId ]
+		p.xp += amount
+		while ( p.xp >= p.xpToNext ) {
+			p.xp -= p.xpToNext
+			p.level += 1
+			p.baseMaxHp += 20
+			p.baseAttackDamage += 3
+			p.xpToNext = round( p.xpToNext * 1.3 )
+		}
+		recomputeEffectiveStats( playerId )
+		p.hp = p.maxHp
+	}
+
+	function addGold( playerId, amount ) {
+		variables.players[ playerId ].gold += amount
+	}
+
+	function dropItem( playerId, itemKey ) {
+		var p = variables.players[ playerId ]
+		variables.inventoryService.addItem( p.characterId, itemKey )
+		sendInventory( playerId )
+	}
+
+	function damagePlayer( playerId, amount ) {
+		var p = variables.players[ playerId ]
+		p.hp -= amount
+		if ( p.hp <= 0 ) {
+			p.hp = 0
+			p.xp = max( 0, p.xp - int( p.xp * variables.gameConfig.getDeathXpPenalty() ) )
+			sendStats( playerId )
+			sendToPlayer( playerId, { type: "died" } )
+			p.respawning = true
+			p.respawnAt = getTickCount() / 1000 + variables.gameConfig.getPlayerRespawnDelay()
+		} else {
+			sendStats( playerId )
+		}
+	}
+
+	function tickPlayerRespawns() {
+		var now = getTickCount() / 1000
+		for ( var pid in structCopy( variables.players ) ) {
+			var p = variables.players[ pid ]
+			if ( ( p.respawning ?: false ) && now >= p.respawnAt ) {
+				p.respawning = false
+				p.hp = p.maxHp
+				p.x = 0
+				p.z = 0
+				p.rotationY = 0
+				sendToPlayer( pid, { type: "respawn", x: 0, z: 0, rotationY: 0 } )
+				sendStats( pid )
+				broadcastExcept( pid, { type: "move", id: pid, x: 0, z: 0, rotationY: 0 } )
+			}
+		}
+	}
+
+	// ── Message handlers ─────────────────────────────────────────────────────
+
+	function handleMove( playerId, x, z, rotationY ) {
+		var p = variables.players[ playerId ]
+		p.x = x
+		p.z = z
+		p.rotationY = rotationY
+		broadcastExcept( playerId, { type: "move", id: playerId, x: x, z: z, rotationY: rotationY } )
+	}
+
+	function handleChat( playerId, text ) {
+		var clean = trim( text ?: "" )
+		if ( !len( clean ) ) {
+			return
+		}
+		if ( len( clean ) > variables.gameConfig.getChatMaxLength() ) {
+			clean = left( clean, variables.gameConfig.getChatMaxLength() )
+		}
+		broadcastAll( { type: "chat", id: playerId, username: variables.players[ playerId ].username, text: clean } )
+	}
+
+	function sendInventory( playerId ) {
+		var p = variables.players[ playerId ]
+		var itemTypes = variables.gameConfig.getItemTypes()
+		var items = []
+		for ( var row in variables.inventoryService.list( p.characterId ) ) {
+			var itemType = itemTypes[ row.key ]
+			items.append( { key: row.key, name: itemType.name, usable: itemType.usable, quantity: row.quantity, equipSlot: itemType.equipSlot } )
+		}
+		sendToPlayer( playerId, { type: "inventory", items: items } )
+	}
+
+	function sendEquipment( playerId ) {
+		var p = variables.players[ playerId ]
+		var itemTypes = variables.gameConfig.getItemTypes()
+		var slots = []
+		for ( var slot in variables.gameConfig.getEquipSlots() ) {
+			var key = p.equipment[ slot ]
+			slots.append( { slot: slot, key: key, name: len( key ) ? itemTypes[ key ].name : "" } )
+		}
+		sendToPlayer( playerId, { type: "equipment", slots: slots } )
+	}
+
+	function handleUseItem( playerId, itemKey ) {
+		var p = variables.players[ playerId ]
+		var itemTypes = variables.gameConfig.getItemTypes()
+		if ( !structKeyExists( itemTypes, itemKey ) ) {
+			return
+		}
+		var itemType = itemTypes[ itemKey ]
+		if ( !itemType.usable || !variables.inventoryService.hasItem( p.characterId, itemKey ) ) {
+			return
+		}
+
+		variables.inventoryService.removeItem( p.characterId, itemKey )
+		p.hp = min( p.maxHp, p.hp + itemType.healAmount )
+		sendStats( playerId )
+		sendInventory( playerId )
+		persist( playerId )
+	}
+
+	function handleEquipItem( playerId, itemKey ) {
+		var p = variables.players[ playerId ]
+		var itemTypes = variables.gameConfig.getItemTypes()
+		if ( !structKeyExists( itemTypes, itemKey ) ) {
+			return
+		}
+		var slot = itemTypes[ itemKey ].equipSlot
+		if ( !len( slot ) || !variables.inventoryService.hasItem( p.characterId, itemKey ) ) {
+			return
+		}
+
+		var currentKey = p.equipment[ slot ]
+		if ( len( currentKey ) ) {
+			variables.inventoryService.addItem( p.characterId, currentKey )
+			variables.equipmentService.unequip( p.characterId, slot )
+		}
+		variables.inventoryService.removeItem( p.characterId, itemKey )
+		variables.equipmentService.equip( p.characterId, slot, itemKey )
+		p.equipment[ slot ] = itemKey
+
+		recomputeEffectiveStats( playerId )
+		sendStats( playerId )
+		sendInventory( playerId )
+		sendEquipment( playerId )
+		persist( playerId )
+	}
+
+	function handleUnequipItem( playerId, slot ) {
+		var p = variables.players[ playerId ]
+		if ( !arrayContains( variables.gameConfig.getEquipSlots(), slot ) ) {
+			return
+		}
+		var currentKey = p.equipment[ slot ]
+		if ( !len( currentKey ) ) {
+			return
+		}
+
+		variables.inventoryService.addItem( p.characterId, currentKey )
+		variables.equipmentService.unequip( p.characterId, slot )
+		p.equipment[ slot ] = ""
+
+		recomputeEffectiveStats( playerId )
+		sendStats( playerId )
+		sendInventory( playerId )
+		sendEquipment( playerId )
+		persist( playerId )
+	}
+
+	function sendShopCatalog( playerId ) {
+		var itemTypes = variables.gameConfig.getItemTypes()
+		var items = []
+		for ( var key in variables.gameConfig.getShopCatalog() ) {
+			var t = itemTypes[ key ]
+			items.append( { key: key, name: t.name, price: t.price, equipSlot: t.equipSlot } )
+		}
+		sendToPlayer( playerId, { type: "shopCatalog", items: items } )
+	}
+
+	function handleBuyItem( playerId, itemKey ) {
+		var p = variables.players[ playerId ]
+		var itemTypes = variables.gameConfig.getItemTypes()
+		var shopCatalog = variables.gameConfig.getShopCatalog()
+		if ( !arrayContains( shopCatalog, itemKey ) || !structKeyExists( itemTypes, itemKey ) ) {
+			return
+		}
+		var price = itemTypes[ itemKey ].price
+		if ( price <= 0 || p.gold < price ) {
+			return
+		}
+
+		var npc = variables.gameConfig.getNpcs()[ "shopkeeper1" ]
+		var dist = variables.javaMath.sqrt( ( ( p.x - npc.x ) * ( p.x - npc.x ) ) + ( ( p.z - npc.z ) * ( p.z - npc.z ) ) )
+		if ( dist > variables.gameConfig.getShopRange() ) {
+			return
+		}
+
+		p.gold -= price
+		variables.inventoryService.addItem( p.characterId, itemKey )
+		sendStats( playerId )
+		sendInventory( playerId )
+		persist( playerId )
+	}
+
+}

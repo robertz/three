@@ -1,0 +1,107 @@
+/**
+ * Account + character REST routes — register/login/me/logout and the
+ * character-select screen's list/create/select/delete. Mounted at "/api"
+ * by app.bxs, so routes here are declared without that prefix.
+ */
+class {
+
+	function init( authService, characterService ) {
+		variables.authService = arguments.authService
+		variables.characterService = arguments.characterService
+		variables.router = boxExpressRouter()
+		_registerRoutes()
+		return this
+	}
+
+	function getRouter() {
+		return variables.router
+	}
+
+	private function _registerRoutes() {
+		var authService = variables.authService
+		var characterService = variables.characterService
+
+		function startSession( res, accountId ) {
+			var token = authService.createSession( accountId )
+			res.cookie( "session", token, { maxAge: 30 * 24 * 60 * 60 } )
+		}
+
+		variables.router.post( "/register", ( req, res ) => {
+			try {
+				var accountId = authService.register( req.body.username ?: "", req.body.password ?: "" )
+				startSession( res, accountId )
+				res.json( { ok: true, characters: characterService.list( accountId ) } )
+			} catch ( any e ) {
+				res.status( 400 ).json( { ok: false, error: e.message } )
+			}
+		} )
+
+		variables.router.post( "/login", ( req, res ) => {
+			try {
+				var accountId = authService.login( req.body.username ?: "", req.body.password ?: "" )
+				startSession( res, accountId )
+				res.json( { ok: true, characters: characterService.list( accountId ) } )
+			} catch ( any e ) {
+				res.status( 401 ).json( { ok: false, error: e.message } )
+			}
+		} )
+
+		variables.router.get( "/me", ( req, res ) => {
+			var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
+			if ( !accountId ) {
+				return res.status( 401 ).json( { ok: false } )
+			}
+			res.json( { ok: true, characters: characterService.list( accountId ) } )
+		} )
+
+		variables.router.post( "/logout", ( req, res ) => {
+			authService.destroySession( req.cookies.session ?: "" )
+			res.cookie( "session", "", { maxAge: 0 } )
+			res.json( { ok: true } )
+		} )
+
+		variables.router.get( "/characters", ( req, res ) => {
+			var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
+			if ( !accountId ) {
+				return res.status( 401 ).json( { ok: false } )
+			}
+			res.json( { ok: true, characters: characterService.list( accountId ) } )
+		} )
+
+		variables.router.post( "/characters", ( req, res ) => {
+			var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
+			if ( !accountId ) {
+				return res.status( 401 ).json( { ok: false } )
+			}
+			try {
+				characterService.create( accountId, req.body.name ?: "" )
+				res.json( { ok: true, characters: characterService.list( accountId ) } )
+			} catch ( any e ) {
+				res.status( 400 ).json( { ok: false, error: e.message } )
+			}
+		} )
+
+		variables.router.post( "/characters/:id/select", ( req, res ) => {
+			var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
+			if ( !accountId ) {
+				return res.status( 401 ).json( { ok: false } )
+			}
+			var characterId = val( req.params.id )
+			if ( !characterService.ownedBy( characterId, accountId ) ) {
+				return res.status( 403 ).json( { ok: false, error: "Not your character." } )
+			}
+			authService.setSessionCharacter( req.cookies.session, characterId )
+			res.json( { ok: true, character: characterService.load( characterId ) } )
+		} )
+
+		variables.router.delete( "/characters/:id", ( req, res ) => {
+			var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
+			if ( !accountId ) {
+				return res.status( 401 ).json( { ok: false } )
+			}
+			characterService.remove( val( req.params.id ), accountId )
+			res.json( { ok: true, characters: characterService.list( accountId ) } )
+		} )
+	}
+
+}

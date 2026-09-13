@@ -1,0 +1,113 @@
+/**
+ * GameConfig is pure static data + one-time-generated world layout, no DB
+ * access — no beforeEach/afterEach cleanup needed anywhere in this spec.
+ */
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "GameConfig", function() {
+
+			it( "exposes all four monster types with the fields combat/AI code depends on", function() {
+				var gameConfig = new game.GameConfig()
+				var monsterTypes = gameConfig.getMonsterTypes()
+
+				expect( monsterTypes ).toHaveKey( "boar" )
+				expect( monsterTypes ).toHaveKey( "wolf" )
+				expect( monsterTypes ).toHaveKey( "alphaBoar" )
+				expect( monsterTypes ).toHaveKey( "direWolf" )
+
+				expect( monsterTypes.boar.aggressive ).toBeFalse()
+				expect( monsterTypes.wolf.aggressive ).toBeTrue()
+				expect( monsterTypes.boar.hp ).toBeGT( 0 )
+				expect( monsterTypes.boar.respawnDelay ).toBeGT( 0 )
+			} )
+
+			it( "lays out zones as contiguous, non-overlapping concentric bands", function() {
+				var gameConfig = new game.GameConfig()
+				var zones = gameConfig.getZones()
+
+				expect( zones.len() ).toBe( 2 )
+				expect( zones[ 1 ].key ).toBe( "meadow" )
+				expect( zones[ 1 ].minRadius ).toBe( 0 )
+				expect( zones[ 2 ].key ).toBe( "highlands" )
+				// The Highlands starts exactly where the Meadow ends — no gap,
+				// no overlap — since the whole world is one continuous space.
+				expect( zones[ 2 ].minRadius ).toBe( zones[ 1 ].maxRadius )
+				expect( zones[ 2 ].maxRadius ).toBeGT( zones[ 2 ].minRadius )
+			} )
+
+			it( "gives every item type the fields inventory/equip/shop code depends on", function() {
+				var gameConfig = new game.GameConfig()
+				var itemTypes = gameConfig.getItemTypes()
+
+				expect( itemTypes.apple.usable ).toBeTrue()
+				expect( itemTypes.apple.healAmount ).toBeGT( 0 )
+				expect( itemTypes.ironSword.equipSlot ).toBe( "weapon" )
+				expect( itemTypes.ironSword.bonusAttackDamage ).toBeGT( 0 )
+				expect( itemTypes.ironSword.price ).toBeGT( 0 )
+
+				// Every entry in the purchasable catalog must reference a real item.
+				for ( var key in gameConfig.getShopCatalog() ) {
+					expect( itemTypes ).toHaveKey( key )
+				}
+			} )
+
+			it( "declares exactly the four equipment slots the client's Equipment panel renders", function() {
+				var gameConfig = new game.GameConfig()
+				expect( gameConfig.getEquipSlots() ).toBe( [ "weapon", "helmet", "chest", "trinket" ] )
+			} )
+
+			it( "formats the shopkeeper NPC into the wire shape npcSnapshot() sends to clients", function() {
+				var gameConfig = new game.GameConfig()
+				var snapshot = gameConfig.npcSnapshot()
+
+				expect( snapshot.len() ).toBe( 1 )
+				expect( snapshot[ 1 ].id ).toBe( "shopkeeper1" )
+				expect( snapshot[ 1 ] ).toHaveKey( "x" )
+				expect( snapshot[ 1 ] ).toHaveKey( "z" )
+				expect( snapshot[ 1 ] ).toHaveKey( "model" )
+			} )
+
+			it( "formats zones into the wire shape zoneSnapshot() sends to clients, without leaking spawn tables", function() {
+				var gameConfig = new game.GameConfig()
+				var snapshot = gameConfig.zoneSnapshot()
+
+				expect( snapshot.len() ).toBe( 2 )
+				expect( snapshot[ 1 ] ).notToHaveKey( "spawns" )
+			} )
+
+			it( "generates the expected number of props and mountains, each with a full position/rotation", function() {
+				var gameConfig = new game.GameConfig()
+				var props = gameConfig.getProps()
+				var mountains = gameConfig.getMountains()
+
+				expect( props.len() ).toBe( 25 )
+				expect( mountains.len() ).toBe( 36 )
+
+				for ( var prop in props ) {
+					expect( prop ).toHaveKey( "type" )
+					expect( prop ).toHaveKey( "x" )
+					expect( prop ).toHaveKey( "z" )
+					expect( prop ).toHaveKey( "rotationY" )
+				}
+				for ( var mountain in mountains ) {
+					expect( mountain ).toHaveKey( "scale" )
+					expect( mountain.scale ).toBeGT( 0 )
+				}
+			} )
+
+			it( "rolls a different world layout for each new instance (it's per-process, not hardcoded)", function() {
+				var first = new game.GameConfig()
+				var second = new game.GameConfig()
+
+				// Vanishingly unlikely to collide by chance across 25 independently
+				// randomized props — a match here would mean the "random" layout
+				// is actually a fixed constant, defeating the point of rolling it
+				// at startup at all.
+				expect( JSONSerialize( first.getProps() ) ).notToBe( JSONSerialize( second.getProps() ) )
+			} )
+
+		} )
+	}
+
+}

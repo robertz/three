@@ -61,7 +61,7 @@ async function main() {
   const equipment = createEquipment((slot) => network.sendUnequipItem(slot));
   const shop = createShop((itemKey) => network.sendBuyItem(itemKey));
   const zoneBanner = createZoneBanner();
-  network = connectNetwork(scene, player, monsterRegistry, npcRegistry, {
+  network = connectNetwork(scene, player, monsterRegistry, npcRegistry, world, {
     onDied: () => {
       dead = true;
     },

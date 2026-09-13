@@ -1,0 +1,132 @@
+/**
+ * Minimal test-only HTTP client (java.net.http.HttpClient) used by integration
+ * specs to hit a real running BoxExpress instance and assert on the response.
+ * Uses the JEP 321 client rather than HttpURLConnection because the latter
+ * hard-rejects "Invalid HTTP method: PATCH" (a fixed verb whitelist baked into
+ * sun.net.www.protocol.http.HttpURLConnection) and working around it needs
+ * reflection that's blocked by module encapsulation on modern JDKs anyway.
+ */
+class {
+
+	function get( targetUrl ) {
+		return _request( "GET", targetUrl, "", "", true )
+	}
+
+	function getWithHeaders( targetUrl, requestHeaders = {} ) {
+		return _request( "GET", targetUrl, "", "", true, requestHeaders )
+	}
+
+	function post( targetUrl, body = "", contentType = "application/json" ) {
+		return _request( "POST", targetUrl, body, contentType, true )
+	}
+
+	function requestNoRedirect( method, targetUrl ) {
+		return _request( method, targetUrl, "", "", false )
+	}
+
+	function request( method, targetUrl, body = "", contentType = "application/json" ) {
+		return _request( method, targetUrl, body, contentType, true )
+	}
+
+	function requestWithHeaders( method, targetUrl, requestHeaders = {}, body = "", contentType = "application/json" ) {
+		return _request( method, targetUrl, body, contentType, true, requestHeaders )
+	}
+
+	/**
+	 * Builds a real multipart/form-data body: fields is {name: value}, files is
+	 * an array of {field, filename, contentType, content} — enough to exercise
+	 * the Multipart middleware end-to-end without a browser.
+	 */
+	function postMultipart( targetUrl, fields = {}, files = [] ) {
+		var boundary = "----BoxExpressTestBoundary" & createObject( "java", "java.util.UUID" ).randomUUID().toString()
+		var crlf = char( 13 ) & char( 10 )
+		var bodyBuf = createObject( "java", "java.io.ByteArrayOutputStream" ).init()
+
+		for ( var fieldName in fields ) {
+			bodyBuf.write( ( "--" & boundary & crlf ).getBytes( "UTF-8" ) )
+			bodyBuf.write( ( 'Content-Disposition: form-data; name="' & fieldName & '"' & crlf & crlf ).getBytes( "UTF-8" ) )
+			bodyBuf.write( toString( fields[ fieldName ] ).getBytes( "UTF-8" ) )
+			bodyBuf.write( crlf.getBytes( "UTF-8" ) )
+		}
+
+		for ( var fileDef in files ) {
+			bodyBuf.write( ( "--" & boundary & crlf ).getBytes( "UTF-8" ) )
+			bodyBuf.write( ( 'Content-Disposition: form-data; name="' & fileDef.field & '"; filename="' & fileDef.filename & '"' & crlf ).getBytes( "UTF-8" ) )
+			bodyBuf.write( ( "Content-Type: " & fileDef.contentType & crlf & crlf ).getBytes( "UTF-8" ) )
+			bodyBuf.write( toString( fileDef.content ).getBytes( "UTF-8" ) )
+			bodyBuf.write( crlf.getBytes( "UTF-8" ) )
+		}
+
+		bodyBuf.write( ( "--" & boundary & "--" & crlf ).getBytes( "UTF-8" ) )
+
+		var httpReq = createObject( "java", "java.net.http.HttpRequest" ).newBuilder()
+			.uri( createObject( "java", "java.net.URI" ).init( targetUrl ) )
+			.header( "Content-Type", "multipart/form-data; boundary=" & boundary )
+			.POST( createObject( "java", "java.net.http.HttpRequest$BodyPublishers" ).ofByteArray( bodyBuf.toByteArray() ) )
+			.build()
+
+		return _readResponse( _client( true ).send( httpReq, createObject( "java", "java.net.http.HttpResponse$BodyHandlers" ).ofString() ) )
+	}
+
+	private function _client( followRedirects ) {
+		var redirectPolicy = createObject( "java", "java.net.http.HttpClient$Redirect" )
+		return createObject( "java", "java.net.http.HttpClient" ).newBuilder()
+			.followRedirects( followRedirects ? redirectPolicy.NORMAL : redirectPolicy.NEVER )
+			.build()
+	}
+
+	private function _request( method, targetUrl, body, contentType, followRedirects, requestHeaders = {} ) {
+		var builder = createObject( "java", "java.net.http.HttpRequest" ).newBuilder()
+			.uri( createObject( "java", "java.net.URI" ).init( targetUrl ) )
+
+		for ( var headerName in requestHeaders ) {
+			builder.header( headerName, requestHeaders[ headerName ] )
+		}
+
+		var bodyPublishers = createObject( "java", "java.net.http.HttpRequest$BodyPublishers" )
+
+		if ( len( body ) ) {
+			builder.header( "Content-Type", contentType )
+			builder.method( method, bodyPublishers.ofString( body ) )
+		} else {
+			builder.method( method, bodyPublishers.noBody() )
+		}
+
+		var response = _client( followRedirects ).send(
+			builder.build(),
+			createObject( "java", "java.net.http.HttpResponse$BodyHandlers" ).ofString()
+		)
+
+		return _readResponse( response )
+	}
+
+	private function _readResponse( response ) {
+		var responseHeaders = response.headers()
+
+		// A response can carry multiple Set-Cookie headers (e.g. the session
+		// middleware's connect.sid alongside a route's own res.cookie() call) —
+		// unlike HttpURLConnection, java.net.http.HttpClient's HttpHeaders doesn't
+		// preserve wire order for firstValue(), so callers need all of them to
+		// reliably find "their" cookie via toInclude().
+		var setCookieValues = responseHeaders.allValues( "Set-Cookie" )
+
+		return {
+			statusCode: response.statusCode(),
+			body: response.body(),
+			contentType: responseHeaders.firstValue( "Content-Type" ).orElse( "" ),
+			location: responseHeaders.firstValue( "Location" ).orElse( "" ),
+			setCookie: createObject( "java", "java.lang.String" ).join( char( 10 ), setCookieValues ),
+			contentDisposition: responseHeaders.firstValue( "Content-Disposition" ).orElse( "" ),
+			etag: responseHeaders.firstValue( "ETag" ).orElse( "" ),
+			lastModified: responseHeaders.firstValue( "Last-Modified" ).orElse( "" ),
+			header: responseHeaders.firstValue( "X-Custom" ).orElse( "" ),
+			contentRange: responseHeaders.firstValue( "Content-Range" ).orElse( "" ),
+			acceptRanges: responseHeaders.firstValue( "Accept-Ranges" ).orElse( "" ),
+			// Generic escape hatch for any header not worth its own named field
+			// above — getHeader("X-Frame-Options") etc.
+			getHeader: function( name ) { return responseHeaders.firstValue( name ).orElse( "" ) },
+			hasHeader: function( name ) { return responseHeaders.firstValue( name ).isPresent() }
+		}
+	}
+
+}

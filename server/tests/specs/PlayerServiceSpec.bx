@@ -1,0 +1,282 @@
+/**
+ * PlayerService owns live in-memory player state, but persist()/connect()
+ * round-trip through the real "three" MySQL database via the existing
+ * CharacterService/InventoryService/EquipmentService/AuthService — no
+ * mocking those out, since the whole point of this class is orchestrating
+ * them correctly. Each test registers its own throwaway account+character
+ * (unique username per test) and afterEach deletes it, cascading to its
+ * characters/inventory_items/equipment rows via the schema's ON DELETE
+ * CASCADE, so tests never depend on each other's data and never leave
+ * residue in a shared dev database.
+ */
+class extends="testbox.system.BaseSpec" {
+
+	function beforeAll() {
+		variables.authService = new models.AuthService()
+		variables.characterService = new models.CharacterService()
+		variables.inventoryService = new models.InventoryService()
+		variables.equipmentService = new models.EquipmentService()
+		variables.gameConfig = new game.GameConfig()
+	}
+
+	function run() {
+		describe( "PlayerService", function() {
+
+			beforeEach( function() {
+				variables.playerService = new game.PlayerService(
+					variables.authService, variables.characterService,
+					variables.inventoryService, variables.equipmentService, variables.gameConfig
+				)
+				variables.accountId = variables.authService.register( "spec_player_" & createUUID(), "testpass123" )
+				variables.characterId = variables.characterService.create( variables.accountId, "SpecHero" )
+				variables.fakeConnection = {
+					send: ( payload ) => {},
+					isClosed: () => false,
+					close: () => {}
+				}
+			} )
+
+			afterEach( function() {
+				queryExecute( "DELETE FROM accounts WHERE id = :id", { id: variables.accountId } )
+			} )
+
+			it( "connect() hydrates a fresh player with base stats and empty equipment", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+
+				expect( p.baseAttackDamage ).toBe( p.attackDamage )
+				expect( p.baseMaxHp ).toBe( p.maxHp )
+				expect( p.equipment.weapon ).toBe( "" )
+				expect( p.equipment.helmet ).toBe( "" )
+			} )
+
+			it( "handleMove updates the player's position", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				variables.playerService.handleMove( playerId, 12, 34, 1.5 )
+				var p = variables.playerService.getPlayers()[ playerId ]
+
+				expect( p.x ).toBe( 12 )
+				expect( p.z ).toBe( 34 )
+				expect( p.rotationY ).toBe( 1.5 )
+			} )
+
+			it( "grantXp levels up, bumps base stats, and heals to full once a level threshold is crossed", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var startingLevel = p.level
+				var startingAttack = p.baseAttackDamage
+				var neededXp = p.xpToNext
+
+				variables.playerService.grantXp( playerId, neededXp + 5 )
+
+				expect( p.level ).toBe( startingLevel + 1 )
+				expect( p.baseAttackDamage ).toBe( startingAttack + 3 )
+				expect( p.xp ).toBe( 5 )
+				expect( p.hp ).toBe( p.maxHp )
+			} )
+
+			it( "addGold increments gold by the exact amount", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var before = p.gold
+
+				variables.playerService.addGold( playerId, 17 )
+
+				expect( p.gold ).toBe( before + 17 )
+			} )
+
+			it( "damagePlayer below zero hp sets respawning and applies the death xp penalty", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				variables.playerService.grantXp( playerId, 100 )
+				var xpBeforeDeath = p.xp
+
+				variables.playerService.damagePlayer( playerId, 999999 )
+
+				expect( p.hp ).toBe( 0 )
+				expect( p.respawning ).toBeTrue()
+				expect( p.xp ).toBeLT( xpBeforeDeath )
+			} )
+
+			it( "damagePlayer that doesn't kill just reduces hp and leaves respawning false", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var before = p.hp
+
+				variables.playerService.damagePlayer( playerId, 1 )
+
+				expect( p.hp ).toBe( before - 1 )
+				expect( p.respawning ).toBeFalse()
+			} )
+
+			it( "tickPlayerRespawns respawns a dead player at the origin once its timer has passed", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				variables.playerService.damagePlayer( playerId, 999999 )
+				p.respawnAt = 0
+
+				variables.playerService.tickPlayerRespawns()
+
+				expect( p.respawning ).toBeFalse()
+				expect( p.hp ).toBe( p.maxHp )
+				expect( p.x ).toBe( 0 )
+				expect( p.z ).toBe( 0 )
+			} )
+
+			it( "handleUseItem heals and consumes one usable item from inventory", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				variables.inventoryService.addItem( variables.characterId, "apple" )
+				variables.playerService.damagePlayer( playerId, 5 )
+				var hpBeforeHeal = p.hp
+
+				variables.playerService.handleUseItem( playerId, "apple" )
+
+				expect( p.hp ).toBeGT( hpBeforeHeal )
+				expect( variables.inventoryService.hasItem( variables.characterId, "apple" ) ).toBeFalse()
+			} )
+
+			it( "handleUseItem is a no-op if the item isn't actually owned", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				variables.playerService.damagePlayer( playerId, 5 )
+				var hpBefore = p.hp
+
+				variables.playerService.handleUseItem( playerId, "apple" )
+
+				expect( p.hp ).toBe( hpBefore )
+			} )
+
+			it( "handleEquipItem moves an owned item from inventory into its slot and boosts effective stats", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var baseAttack = p.attackDamage
+				variables.inventoryService.addItem( variables.characterId, "ironSword" )
+
+				variables.playerService.handleEquipItem( playerId, "ironSword" )
+
+				expect( p.equipment.weapon ).toBe( "ironSword" )
+				expect( p.attackDamage ).toBe( baseAttack + 8 )
+				expect( variables.inventoryService.hasItem( variables.characterId, "ironSword" ) ).toBeFalse()
+			} )
+
+			it( "handleEquipItem into a different slot doesn't disturb an already-equipped item", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				variables.inventoryService.addItem( variables.characterId, "ironSword" )
+				variables.inventoryService.addItem( variables.characterId, "leatherHelmet" )
+				variables.playerService.handleEquipItem( playerId, "ironSword" )
+
+				variables.playerService.handleEquipItem( playerId, "leatherHelmet" )
+
+				var p = variables.playerService.getPlayers()[ playerId ]
+				expect( p.equipment.weapon ).toBe( "ironSword" )
+				expect( p.equipment.helmet ).toBe( "leatherHelmet" )
+			} )
+
+			it( "handleEquipItem rejects an item that isn't in inventory, leaving the slot untouched", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+
+				variables.playerService.handleEquipItem( playerId, "ironSword" )
+
+				var p = variables.playerService.getPlayers()[ playerId ]
+				expect( p.equipment.weapon ).toBe( "" )
+			} )
+
+			it( "handleUnequipItem returns the item to inventory and drops the stat bonus", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var baseAttack = p.attackDamage
+				variables.inventoryService.addItem( variables.characterId, "ironSword" )
+				variables.playerService.handleEquipItem( playerId, "ironSword" )
+
+				variables.playerService.handleUnequipItem( playerId, "weapon" )
+
+				expect( p.equipment.weapon ).toBe( "" )
+				expect( p.attackDamage ).toBe( baseAttack )
+				expect( variables.inventoryService.hasItem( variables.characterId, "ironSword" ) ).toBeTrue()
+			} )
+
+			it( "equipment and effective stats survive a disconnect/reconnect cycle", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				variables.inventoryService.addItem( variables.characterId, "leatherHelmet" )
+				variables.playerService.handleEquipItem( playerId, "leatherHelmet" )
+				variables.playerService.disconnect( playerId )
+
+				var playerId2 = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p2 = variables.playerService.getPlayers()[ playerId2 ]
+
+				expect( p2.equipment.helmet ).toBe( "leatherHelmet" )
+				expect( p2.maxHp ).toBe( p2.baseMaxHp + 15 )
+			} )
+
+			it( "handleBuyItem rejects a purchase made too far from the shop, leaving gold unchanged", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var npc = variables.gameConfig.getNpcs()[ "shopkeeper1" ]
+				p.gold = 100
+				p.x = npc.x + 500
+				p.z = npc.z + 500
+
+				variables.playerService.handleBuyItem( playerId, "apple" )
+
+				expect( p.gold ).toBe( 100 )
+			} )
+
+			it( "handleBuyItem rejects a purchase the player can't afford, leaving gold unchanged", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var npc = variables.gameConfig.getNpcs()[ "shopkeeper1" ]
+				p.x = npc.x
+				p.z = npc.z
+				p.gold = 1 // ironSword costs 50
+
+				variables.playerService.handleBuyItem( playerId, "ironSword" )
+
+				expect( p.gold ).toBe( 1 )
+				expect( variables.inventoryService.hasItem( variables.characterId, "ironSword" ) ).toBeFalse()
+			} )
+
+			it( "handleBuyItem succeeds in range with enough gold, deducting the exact price", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				var npc = variables.gameConfig.getNpcs()[ "shopkeeper1" ]
+				p.x = npc.x
+				p.z = npc.z
+				p.gold = 100
+
+				variables.playerService.handleBuyItem( playerId, "apple" )
+
+				expect( p.gold ).toBe( 95 )
+				expect( variables.inventoryService.hasItem( variables.characterId, "apple" ) ).toBeTrue()
+			} )
+
+			it( "disconnect persists base stats/gold to the database and removes the player from the live struct", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				variables.playerService.addGold( playerId, 33 )
+
+				variables.playerService.disconnect( playerId )
+
+				expect( structKeyExists( variables.playerService.getPlayers(), playerId ) ).toBeFalse()
+				var reloaded = variables.characterService.load( variables.characterId )
+				expect( reloaded.gold ).toBe( 33 )
+			} )
+
+			it( "kickExistingConnection closes and removes any live connection for the same account", function() {
+				var closed = false
+				var trackingConnection = {
+					send: ( payload ) => {},
+					isClosed: () => false,
+					close: () => { closed = true }
+				}
+				var playerId = variables.playerService.connect( trackingConnection, variables.accountId, variables.characterId )
+
+				variables.playerService.kickExistingConnection( variables.accountId )
+
+				expect( closed ).toBeTrue()
+				expect( structKeyExists( variables.playerService.getPlayers(), playerId ) ).toBeFalse()
+			} )
+
+		} )
+	}
+
+}

@@ -1,0 +1,221 @@
+/**
+ * Owns the live `monsters` struct and all combat/AI logic. Depends on
+ * PlayerService (reads/mutates player state — cooldowns, position,
+ * respawning — and calls its stat/reward methods on a kill); PlayerService
+ * never depends back on this class.
+ */
+class {
+
+	function init( gameConfig, playerService ) {
+		variables.gameConfig = arguments.gameConfig
+		variables.playerService = arguments.playerService
+		variables.javaMath = createObject( "java", "java.lang.Math" )
+
+		variables.monsters = {}
+		variables.nextMonsterId = 0
+
+		return this
+	}
+
+	function getMonsters() {
+		return variables.monsters
+	}
+
+	function randomOffset( bounds ) {
+		return ( rand() - 0.5 ) * 2 * bounds
+	}
+
+	// Random point in the ring [minRadius, maxRadius] around the origin — how a
+	// zone's monster homes are scattered across its band without spilling into
+	// the zone on either side of it.
+	function randomPointInRing( minRadius, maxRadius ) {
+		var angle = rand() * 2 * variables.javaMath.PI
+		var radius = minRadius + ( rand() * ( maxRadius - minRadius ) )
+		return { x: variables.javaMath.cos( angle ) * radius, z: variables.javaMath.sin( angle ) * radius }
+	}
+
+	function spawnMonster( typeKey, zone ) {
+		variables.nextMonsterId++
+		var id = "m#variables.nextMonsterId#"
+		var type = variables.gameConfig.getMonsterTypes()[ typeKey ]
+		var home = randomPointInRing( zone.minRadius, zone.maxRadius )
+		variables.monsters[ id ] = {
+			id: id, type: typeKey, name: type.name, level: type.level,
+			x: home.x, z: home.z, rotationY: 0,
+			hp: type.hp, maxHp: type.hp, damage: type.damage,
+			xpReward: type.xpReward, goldMin: type.goldMin, goldMax: type.goldMax,
+			aggressive: type.aggressive, aggroRadius: type.aggroRadius,
+			attackRange: type.attackRange, attackCooldown: type.attackCooldown,
+			speed: type.speed, baseY: type.baseY,
+			dropItem: type.dropItem, dropChance: type.dropChance,
+			homeX: home.x, homeZ: home.z,
+			wanderTargetX: home.x, wanderTargetZ: home.z, wanderTimer: 0,
+			attackTimer: 0, state: "wander", targetPlayerId: "",
+			alive: true, respawnAt: 0
+		}
+	}
+
+	function monsterSnapshot() {
+		var list = []
+		for ( var id in variables.monsters ) {
+			var m = variables.monsters[ id ]
+			list.append( { id: id, type: m.type, level: m.level, x: m.x, z: m.z, rotationY: m.rotationY, hp: m.hp, maxHp: m.maxHp, alive: m.alive } )
+		}
+		return list
+	}
+
+	function handleAttack( playerId, targetId, isSkill ) {
+		var players = variables.playerService.getPlayers()
+		var p = players[ playerId ]
+		if ( p.respawning ?: false ) {
+			return
+		}
+		if ( !structKeyExists( variables.monsters, targetId ) ) {
+			return
+		}
+		var m = variables.monsters[ targetId ]
+		if ( !m.alive ) {
+			return
+		}
+
+		var now = getTickCount() / 1000
+		var readyAt = isSkill ? ( p.skillReadyAt ?: 0 ) : ( p.attackReadyAt ?: 0 )
+		if ( now < readyAt ) {
+			return
+		}
+
+		var dist = variables.javaMath.sqrt( ( ( p.x - m.x ) * ( p.x - m.x ) ) + ( ( p.z - m.z ) * ( p.z - m.z ) ) )
+		if ( dist > variables.gameConfig.getAttackRange() ) {
+			return
+		}
+
+		// Only monsters in the player's front hemisphere are attackable — the
+		// same forward vector player.js's own movement code derives from
+		// rotationY (sin/cos of the Y-axis facing angle), dotted against the
+		// direction to the target. A negative dot product means the target is
+		// behind the player.
+		var forwardX = variables.javaMath.sin( p.rotationY )
+		var forwardZ = variables.javaMath.cos( p.rotationY )
+		var facingDot = ( forwardX * ( m.x - p.x ) ) + ( forwardZ * ( m.z - p.z ) )
+		if ( facingDot < 0 ) {
+			return
+		}
+
+		if ( isSkill ) {
+			p.skillReadyAt = now + variables.gameConfig.getSkillCooldown()
+		} else {
+			p.attackReadyAt = now + variables.gameConfig.getAttackCooldown()
+		}
+
+		m.hp -= p.attackDamage * ( isSkill ? variables.gameConfig.getSkillMultiplier() : 1 )
+		if ( m.aggressive ) {
+			m.state = "chase"
+			m.targetPlayerId = playerId
+		}
+
+		if ( m.hp <= 0 ) {
+			m.hp = 0
+			m.alive = false
+			var baseDelay = variables.gameConfig.getMonsterTypes()[ m.type ].respawnDelay
+			m.respawnAt = now + ( baseDelay * ( 0.85 + ( rand() * 0.3 ) ) )
+			m.state = "wander"
+			m.targetPlayerId = ""
+
+			variables.playerService.grantXp( playerId, m.xpReward )
+			variables.playerService.addGold( playerId, m.goldMin + int( rand() * ( m.goldMax - m.goldMin + 1 ) ) )
+			variables.playerService.sendStats( playerId )
+
+			if ( rand() < m.dropChance ) {
+				variables.playerService.dropItem( playerId, m.dropItem )
+			}
+
+			variables.playerService.persist( playerId )
+		}
+
+		variables.playerService.broadcastAll( { type: "monsterUpdate", id: targetId, hp: m.hp, alive: m.alive } )
+	}
+
+	function tickMonsterAI() {
+		var players = variables.playerService.getPlayers()
+		var tickSeconds = variables.gameConfig.getTickSeconds()
+		var wanderRadius = variables.gameConfig.getWanderRadius()
+
+		for ( var mid in variables.monsters ) {
+			var m = variables.monsters[ mid ]
+
+			if ( !m.alive ) {
+				if ( getTickCount() / 1000 >= m.respawnAt ) {
+					m.alive = true
+					m.hp = m.maxHp
+					m.x = m.homeX
+					m.z = m.homeZ
+					m.state = "wander"
+					m.targetPlayerId = ""
+				}
+				continue
+			}
+
+			if ( m.aggressive && m.state != "chase" ) {
+				var nearestId = ""
+				var nearestDist = m.aggroRadius
+				for ( var pid in players ) {
+					var p = players[ pid ]
+					if ( p.respawning ?: false ) {
+						continue
+					}
+					var d = variables.javaMath.sqrt( ( ( p.x - m.x ) * ( p.x - m.x ) ) + ( ( p.z - m.z ) * ( p.z - m.z ) ) )
+					if ( d <= nearestDist ) {
+						nearestDist = d
+						nearestId = pid
+					}
+				}
+				if ( len( nearestId ) ) {
+					m.state = "chase"
+					m.targetPlayerId = nearestId
+				}
+			}
+
+			if ( m.state == "chase" ) {
+				if ( !structKeyExists( players, m.targetPlayerId ) || ( players[ m.targetPlayerId ].respawning ?: false ) ) {
+					m.state = "wander"
+					m.targetPlayerId = ""
+				} else {
+					var target = players[ m.targetPlayerId ]
+					var dx = target.x - m.x
+					var dz = target.z - m.z
+					var dist = variables.javaMath.sqrt( ( ( dx ) * ( dx ) ) + ( ( dz ) * ( dz ) ) )
+					if ( dist > m.aggroRadius * 1.5 ) {
+						m.state = "wander"
+						m.targetPlayerId = ""
+					} else if ( dist > m.attackRange * 0.8 ) {
+						m.x += ( dx / dist ) * m.speed * tickSeconds
+						m.z += ( dz / dist ) * m.speed * tickSeconds
+						m.rotationY = variables.javaMath.atan2( dx / dist, dz / dist )
+					} else {
+						m.attackTimer -= tickSeconds
+						if ( m.attackTimer <= 0 ) {
+							m.attackTimer = m.attackCooldown
+							variables.playerService.damagePlayer( m.targetPlayerId, m.damage )
+						}
+					}
+				}
+			} else {
+				m.wanderTimer -= tickSeconds
+				if ( m.wanderTimer <= 0 ) {
+					m.wanderTargetX = m.homeX + randomOffset( wanderRadius )
+					m.wanderTargetZ = m.homeZ + randomOffset( wanderRadius )
+					m.wanderTimer = 2 + rand() * 3
+				}
+				var dx = m.wanderTargetX - m.x
+				var dz = m.wanderTargetZ - m.z
+				var dist = variables.javaMath.sqrt( ( ( dx ) * ( dx ) ) + ( ( dz ) * ( dz ) ) )
+				if ( dist > 0.1 ) {
+					m.x += ( dx / dist ) * m.speed * 0.5 * tickSeconds
+					m.z += ( dz / dist ) * m.speed * 0.5 * tickSeconds
+					m.rotationY = variables.javaMath.atan2( dx / dist, dz / dist )
+				}
+			}
+		}
+	}
+
+}

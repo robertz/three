@@ -1,0 +1,179 @@
+/**
+ * MonsterService depends on a real PlayerService (for reward/cooldown
+ * effects), which in turn round-trips through the real "three" database —
+ * see PlayerServiceSpec's header for why that's not mocked out. Each test
+ * gets its own throwaway account+character, cleaned up afterEach.
+ */
+class extends="testbox.system.BaseSpec" {
+
+	function beforeAll() {
+		variables.authService = new models.AuthService()
+		variables.characterService = new models.CharacterService()
+		variables.inventoryService = new models.InventoryService()
+		variables.equipmentService = new models.EquipmentService()
+		variables.gameConfig = new game.GameConfig()
+		variables.javaMath = createObject( "java", "java.lang.Math" )
+	}
+
+	function run() {
+		describe( "MonsterService", function() {
+
+			beforeEach( function() {
+				variables.playerService = new game.PlayerService(
+					variables.authService, variables.characterService,
+					variables.inventoryService, variables.equipmentService, variables.gameConfig
+				)
+				variables.monsterService = new game.MonsterService( variables.gameConfig, variables.playerService )
+				variables.accountId = variables.authService.register( "spec_monster_" & createUUID(), "testpass123" )
+				variables.characterId = variables.characterService.create( variables.accountId, "SpecFighter" )
+				variables.fakeConnection = {
+					send: ( payload ) => {},
+					isClosed: () => false,
+					close: () => {}
+				}
+				variables.playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+			} )
+
+			afterEach( function() {
+				queryExecute( "DELETE FROM accounts WHERE id = :id", { id: variables.accountId } )
+			} )
+
+			it( "spawnMonster places a monster within its zone's radius band with type-derived stats", function() {
+				var zone = variables.gameConfig.getZones()[ 1 ] // meadow: 0-45
+				variables.monsterService.spawnMonster( "boar", zone )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+
+				var dist = variables.javaMath.sqrt( ( m.x * m.x ) + ( m.z * m.z ) )
+				expect( dist ).toBeGTE( zone.minRadius )
+				expect( dist ).toBeLTE( zone.maxRadius )
+				expect( m.type ).toBe( "boar" )
+				expect( m.hp ).toBe( variables.gameConfig.getMonsterTypes().boar.hp )
+				expect( m.alive ).toBeTrue()
+			} )
+
+			it( "monsterSnapshot formats each monster into the wire shape clients expect", function() {
+				variables.monsterService.spawnMonster( "wolf", variables.gameConfig.getZones()[ 1 ] )
+				var snapshot = variables.monsterService.monsterSnapshot()
+
+				expect( snapshot.len() ).toBe( 1 )
+				expect( snapshot[ 1 ] ).toHaveKey( "id" )
+				expect( snapshot[ 1 ] ).toHaveKey( "hp" )
+				expect( snapshot[ 1 ] ).toHaveKey( "alive" )
+				expect( snapshot[ 1 ].type ).toBe( "wolf" )
+			} )
+
+			it( "handleAttack damages a monster directly in front of the player, within range", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.x = m.x
+				p.z = m.z - 1 // rotationY=0 -> forward is +z, so this is in front
+				p.rotationY = 0
+				var hpBefore = m.hp
+
+				variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+
+				expect( m.hp ).toBeLT( hpBefore )
+			} )
+
+			it( "handleAttack does nothing to a monster directly behind the player", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.x = m.x
+				p.z = m.z + 1 // behind the player, given rotationY=0 -> forward=+z
+				p.rotationY = 0
+				var hpBefore = m.hp
+
+				variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+
+				expect( m.hp ).toBe( hpBefore )
+			} )
+
+			it( "handleAttack does nothing to a monster outside attack range even if it's in front", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.x = m.x
+				p.z = m.z - 500
+				p.rotationY = 0
+				var hpBefore = m.hp
+
+				variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+
+				expect( m.hp ).toBe( hpBefore )
+			} )
+
+			it( "handleAttack respects the attack cooldown — a second immediate attack doesn't double-hit", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.x = m.x
+				p.z = m.z - 1
+				p.rotationY = 0
+
+				variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+				var hpAfterFirst = m.hp
+				variables.monsterService.handleAttack( variables.playerId, monsterId, false ) // still on cooldown
+
+				expect( m.hp ).toBe( hpAfterFirst )
+			} )
+
+			it( "killing a monster grants xp/gold and marks it dead with a future respawn time", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.x = m.x
+				p.z = m.z - 1
+				p.rotationY = 0
+				var xpBefore = p.xp
+				var goldBefore = p.gold
+
+				// attackDamage=10, boar hp=30 — three full hits kill it; bypass the
+				// cooldown between them since this test is about the kill outcome,
+				// not cooldown pacing (that's covered separately above).
+				for ( var i = 1; i <= 3; i++ ) {
+					variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+					p.attackReadyAt = 0
+				}
+
+				expect( m.alive ).toBeFalse()
+				expect( m.hp ).toBe( 0 )
+				expect( m.respawnAt ).toBeGT( 0 )
+				expect( p.xp ).toBeGT( xpBefore )
+				expect( p.gold ).toBeGT( goldBefore )
+			} )
+
+			it( "tickMonsterAI respawns a dead monster at its home position once its timer has passed", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				m.alive = false
+				m.hp = 0
+				m.respawnAt = 0 // already due
+
+				variables.monsterService.tickMonsterAI()
+
+				expect( m.alive ).toBeTrue()
+				expect( m.hp ).toBe( m.maxHp )
+				expect( m.x ).toBe( m.homeX )
+				expect( m.z ).toBe( m.homeZ )
+			} )
+
+		} )
+	}
+
+}

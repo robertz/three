@@ -9,9 +9,12 @@ for the pivot.)
 ## Stack
 
 - **Client**: Three.js + Vite, `client/`.
-- **Server**: BoxLang Express, `server/app.bxs`. Real-time multiplayer sync
-  runs over `app.ws()` (native to BoxLang Express — no SocketBox/CommandBox
-  needed since Express runs its own server).
+- **Server**: BoxLang Express. `server/app.bxs` is a thin composition root;
+  game logic lives in `server/game/` (`GameConfig`/`PlayerService`/
+  `MonsterService`), REST routes in `server/routes/`, and DB-only CRUD in
+  `server/models/` — see Milestone 28. Real-time multiplayer sync runs over
+  `app.ws()` (native to BoxLang Express — no SocketBox/CommandBox needed
+  since Express runs its own server).
 - **Persistence**: MySQL (`three` database, `server/db/schema.sql`). Switched
   from the original MSSQL plan since a local MySQL instance was already
   available on this machine and MSSQL wasn't — same JDBC-based config either
@@ -429,6 +432,68 @@ deducts gold and adds the item to inventory, and two direct
 `network.ws.send({type:"buyItem",...})` bypass calls (far from the NPC;
 gold below price) both correctly landed no change.
 
+Milestone 27 (done): server-authoritative world layout. The scattered small
+props (trees/rocks/bushes/stumps) and the distant mountain ring were
+previously generated entirely client-side with unseeded `Math.random()`
+calls in `world.js`, run independently by every browser tab — the server
+had no concept of them at all, so two players in the same game world saw
+completely different scenery, and (more importantly) each built its own
+different collision-obstacle list. Moved generation server-side:
+`server/app.bxs` now rolls a fixed `PROPS` (25) and `MOUNTAINS` (36) list
+once at startup and includes them in the `welcome` message; `world.js`'s
+`createWorld()` now only sets up the ground/sky/lighting and returns an
+empty `obstacles` array, and a new `applyWorldSnapshot()` (called once from
+`network.js`'s `welcome` handler, same pattern as monsters/NPCs) renders the
+server's list and populates that array. Per-type visual scale/collision
+radius stay client-side lookups (server sends only `type`/position/
+rotation/mountain-scale), mirroring how monsters already work. **Bug hit
+during implementation**: the new top-level generation loop used `var` for
+loop-local variables outside a function, which crashed the server at
+startup with `Scope [local] is not available in this context` — a known
+BoxLang gotcha in this codebase (top-level `var` only works inside
+functions); `boxlang check` doesn't catch this, it's a runtime-only failure.
+Verified two independent connections (scripted directly over the WS
+protocol, bypassing the browser entirely) receive byte-identical `props`/
+`mountains` arrays, and that the client's `world.obstacles` ends up with
+the expected 61 entries (36 + 25) built from that data.
+
+Milestone 28 (done): server modularized. `server/app.bxs` had grown to
+~830 lines mixing app bootstrap, REST routes, static game config, live
+multiplayer state, and all gameplay logic. Split into: `server/game/
+GameConfig.bx` (static world data + the one-time PROPS/MOUNTAINS
+generation, no runtime mutation), `server/game/PlayerService.bx` (owns the
+live `players` struct — connection lifecycle, broadcasting, persistence,
+stats, inventory/equipment/shop handlers, chat), `server/game/
+MonsterService.bx` (owns the live `monsters` struct — combat/AI, depends on
+`PlayerService` one-directionally for reward/cooldown effects), and
+`server/routes/AccountRoutes.bx` (register/login/me/logout + character
+CRUD, built on the framework's `boxExpressRouter()` global BIF and mounted
+via `app.use("/api", ...)`). `app.bxs` is now a ~120-line composition root:
+instantiate everything, mount routes, define `app.ws("/game")` as pure
+orchestration calling into the two services, schedule the tick, listen.
+Mechanical move, not a redesign — same function bodies, calls become
+`service.method()` — to keep risk low on an already-working server.
+**Two real bugs hit and fixed**: (1) inside a class method,
+`javaMath = createObject(...)` without a `variables.` prefix creates a
+function-local variable, not an instance property, so a *different* method
+on the same instance can't see it (`KeyNotFoundException` at runtime) — the
+class-method analogue of the project's existing "top-level `var` fails
+outside functions" gotcha; (2) a `private function` can't be invoked
+through a `this`-reference captured by a nested closure handed to an
+external framework (`var self = this` inside a route callback registered
+via `app.use`) — fixed by declaring a plain nested named function instead
+and calling it unqualified, mirroring how the original monolith already
+called `startSession(...)` unqualified from its own route closures. Both
+caught by a scratch-script technique (instantiate the real classes
+directly in a throwaway `.bxs` with a fake `{send,isClosed,close}`
+connection object standing in for a WebSocket) that smoke-tested every new
+class in isolation before the final `app.bxs` rewire. Verified no
+regressions afterward with the same live checks already proven this
+session: two independent connections still get byte-identical world data,
+a full combat-kill still grants correct xp/gold/loot, shop purchases are
+still gated server-side on both range and gold, and logging in from a
+second connection still kicks the first.
+
 Not yet wired up: matching the new fantasy theme in the chat/inventory
 panels and login/character-select-adjacent screens (login itself still uses
 the original plain styling), and re-selecting a character without
@@ -480,3 +545,17 @@ cp .env.example .env   # edit if your MySQL isn't root@127.0.0.1:3306 with no pa
 `boxlang app.bxs` on its own won't pick up the datasource config, and
 `${env.DB_PASSWORD}` needs the var to actually exist (even empty) rather
 than relying on the JSON-side default.
+
+**Running the server test suite** (TestBox, `server/tests/specs/`):
+
+```bash
+cd server
+box install testbox --saveDev   # first time only
+boxlang --bx-config boxlang.json run-tests.bxs
+```
+
+Round-trips through the real `three` MySQL database — each spec registers
+and cleans up its own throwaway account(s), so it's safe to run against the
+same dev database used for manual testing. `AccountRoutesSpec` starts its
+own BoxExpress app on port 4521 for the duration of the run; it doesn't
+touch the actual game server on 3001.

@@ -3,14 +3,26 @@
  *   ./start.sh
  * Requires the "three" MySQL database (see db/schema.sql) and the
  * datasource configured in boxlang.json.
+ *
+ * This file is a thin composition root — it wires services together and
+ * defines the HTTP/WS transport glue. Game logic lives in server/game/
+ * (GameConfig = static world data, PlayerService = live player state and
+ * messaging, MonsterService = live monster state and combat/AI), account
+ * REST routes live in server/routes/AccountRoutes.bx, and DB-only CRUD
+ * lives in server/models/*.bx.
  */
 app = boxExpress()
-javaMath = createObject( "java", "java.lang.Math" )
 
 authService = new models.AuthService()
 characterService = new models.CharacterService()
 inventoryService = new models.InventoryService()
 equipmentService = new models.EquipmentService()
+
+gameConfig = new game.GameConfig()
+playerService = new game.PlayerService( authService, characterService, inventoryService, equipmentService, gameConfig )
+monsterService = new game.MonsterService( gameConfig, playerService )
+
+accountRoutes = new routes.AccountRoutes( authService, characterService )
 
 app.use( boxExpressCors( { origin: "http://localhost:5173", credentials: true } ) )
 app.use( boxExpressJSON() )
@@ -20,662 +32,22 @@ app.get( "/health", ( req, res ) => {
 	res.json( { ok: true } )
 } )
 
-// ── Accounts ─────────────────────────────────────────────────────────────
+app.use( "/api", accountRoutes.getRouter() )
 
-function startSession( res, accountId ) {
-	var token = authService.createSession( accountId )
-	res.cookie( "session", token, { maxAge: 30 * 24 * 60 * 60 } )
-}
+// ── Initial monster population ──────────────────────────────────────────────
 
-app.post( "/api/register", ( req, res ) => {
-	try {
-		var accountId = authService.register( req.body.username ?: "", req.body.password ?: "" )
-		startSession( res, accountId )
-		res.json( { ok: true, characters: characterService.list( accountId ) } )
-	} catch ( any e ) {
-		res.status( 400 ).json( { ok: false, error: e.message } )
-	}
-} )
-
-app.post( "/api/login", ( req, res ) => {
-	try {
-		var accountId = authService.login( req.body.username ?: "", req.body.password ?: "" )
-		startSession( res, accountId )
-		res.json( { ok: true, characters: characterService.list( accountId ) } )
-	} catch ( any e ) {
-		res.status( 401 ).json( { ok: false, error: e.message } )
-	}
-} )
-
-app.get( "/api/me", ( req, res ) => {
-	var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
-	if ( !accountId ) {
-		return res.status( 401 ).json( { ok: false } )
-	}
-	res.json( { ok: true, characters: characterService.list( accountId ) } )
-} )
-
-app.post( "/api/logout", ( req, res ) => {
-	authService.destroySession( req.cookies.session ?: "" )
-	res.cookie( "session", "", { maxAge: 0 } )
-	res.json( { ok: true } )
-} )
-
-// ── Characters ───────────────────────────────────────────────────────────
-
-app.get( "/api/characters", ( req, res ) => {
-	var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
-	if ( !accountId ) {
-		return res.status( 401 ).json( { ok: false } )
-	}
-	res.json( { ok: true, characters: characterService.list( accountId ) } )
-} )
-
-app.post( "/api/characters", ( req, res ) => {
-	var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
-	if ( !accountId ) {
-		return res.status( 401 ).json( { ok: false } )
-	}
-	try {
-		var characterId = characterService.create( accountId, req.body.name ?: "" )
-		res.json( { ok: true, characters: characterService.list( accountId ) } )
-	} catch ( any e ) {
-		res.status( 400 ).json( { ok: false, error: e.message } )
-	}
-} )
-
-app.post( "/api/characters/:id/select", ( req, res ) => {
-	var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
-	if ( !accountId ) {
-		return res.status( 401 ).json( { ok: false } )
-	}
-	var characterId = val( req.params.id )
-	if ( !characterService.ownedBy( characterId, accountId ) ) {
-		return res.status( 403 ).json( { ok: false, error: "Not your character." } )
-	}
-	authService.setSessionCharacter( req.cookies.session, characterId )
-	res.json( { ok: true, character: characterService.load( characterId ) } )
-} )
-
-app.delete( "/api/characters/:id", ( req, res ) => {
-	var accountId = authService.accountIdForToken( req.cookies.session ?: "" )
-	if ( !accountId ) {
-		return res.status( 401 ).json( { ok: false } )
-	}
-	characterService.remove( val( req.params.id ), accountId )
-	res.json( { ok: true, characters: characterService.list( accountId ) } )
-} )
-
-// ── World constants ────────────────────────────────────────────────────────
-
-WORLD_BOUNDS = 99
-WANDER_RADIUS = 6
-TICK_SECONDS = 0.2
-MONSTER_RESPAWN_DELAY = 6
-PLAYER_RESPAWN_DELAY = 3
-DEATH_XP_PENALTY = 0.1
-ATTACK_RANGE = 3
-ATTACK_COOLDOWN = 1
-SKILL_COOLDOWN = 4
-SKILL_MULTIPLIER = 2
-SAVE_INTERVAL_SECONDS = 5
-CHAT_MAX_LENGTH = 200
-
-MONSTER_TYPES = {
-	boar: {
-		name: "Boar", level: 1, hp: 30, damage: 0, xpReward: 10, goldMin: 5, goldMax: 15,
-		aggressive: false, aggroRadius: 0, attackRange: 1.2, attackCooldown: 1.5, speed: 1.2, baseY: 0.6,
-		dropItem: "apple", dropChance: 0.3
-	},
-	wolf: {
-		name: "Wolf", level: 2, hp: 50, damage: 8, xpReward: 25, goldMin: 15, goldMax: 30,
-		aggressive: true, aggroRadius: 8, attackRange: 1.6, attackCooldown: 1.5, speed: 2.6, baseY: 0.5,
-		dropItem: "wolfFang", dropChance: 0.4
-	},
-	// Higher-level reskins of the same two models (see monsters.js's TINT map)
-	// rather than new art — they only spawn in the Ashen Highlands zone.
-	alphaBoar: {
-		name: "Alpha Boar", level: 5, hp: 90, damage: 14, xpReward: 55, goldMin: 25, goldMax: 45,
-		aggressive: true, aggroRadius: 7, attackRange: 1.4, attackCooldown: 1.3, speed: 1.8, baseY: 0.6,
-		dropItem: "apple", dropChance: 0.4
-	},
-	direWolf: {
-		name: "Dire Wolf", level: 7, hp: 140, damage: 20, xpReward: 90, goldMin: 40, goldMax: 70,
-		aggressive: true, aggroRadius: 10, attackRange: 1.8, attackCooldown: 1.2, speed: 3.2, baseY: 0.5,
-		dropItem: "wolfFang", dropChance: 0.5
-	}
-}
-
-// Zones are just concentric bands of the one continuous world, keyed off
-// distance from the origin — no separate maps/instances, no loading screens.
-// Walking outward from spawn (where the shop sits) takes you from the
-// beginner Meadow into the tougher Highlands.
-ZONES = [
-	{ key: "meadow", name: "Sunfield Meadow", minRadius: 0, maxRadius: 45, spawns: { boar: 8, wolf: 4 } },
-	{ key: "highlands", name: "Ashen Highlands", minRadius: 45, maxRadius: WORLD_BOUNDS * 0.8, spawns: { alphaBoar: 5, direWolf: 5 } }
-]
-
-ITEM_TYPES = {
-	apple:         { name: "Apple",          usable: true,  healAmount: 20, equipSlot: "",        bonusAttackDamage: 0, bonusMaxHp: 0,  price: 5 },
-	wolfFang:      { name: "Wolf Fang",      usable: false, healAmount: 0,  equipSlot: "",        bonusAttackDamage: 0, bonusMaxHp: 0,  price: 0 },
-	ironSword:     { name: "Iron Sword",     usable: false, healAmount: 0,  equipSlot: "weapon",  bonusAttackDamage: 8, bonusMaxHp: 0,  price: 50 },
-	leatherHelmet: { name: "Leather Helmet", usable: false, healAmount: 0,  equipSlot: "helmet",  bonusAttackDamage: 0, bonusMaxHp: 15, price: 30 },
-	chainmailVest: { name: "Chainmail Vest", usable: false, healAmount: 0,  equipSlot: "chest",   bonusAttackDamage: 0, bonusMaxHp: 30, price: 60 },
-	luckyCharm:    { name: "Lucky Charm",    usable: false, healAmount: 0,  equipSlot: "trinket", bonusAttackDamage: 3, bonusMaxHp: 10, price: 40 }
-}
-EQUIP_SLOTS = [ "weapon", "helmet", "chest", "trinket" ]
-
-NPCS = { shopkeeper1: { id: "shopkeeper1", name: "Gilda the Vendor", x: 5, z: 5, rotationY: 0, model: "shopkeeper" } }
-SHOP_RANGE = 4
-SHOP_CATALOG = [ "ironSword", "leatherHelmet", "chainmailVest", "luckyCharm", "apple" ]
-
-function npcSnapshot() {
-	var list = []
-	for ( var id in NPCS ) {
-		var n = NPCS[ id ]
-		list.append( { id: n.id, name: n.name, x: n.x, z: n.z, rotationY: n.rotationY, model: n.model } )
-	}
-	return list
-}
-
-function zoneSnapshot() {
-	var list = []
-	for ( var zone in ZONES ) {
-		list.append( { key: zone.key, name: zone.name, minRadius: zone.minRadius, maxRadius: zone.maxRadius } )
-	}
-	return list
-}
-
-// ── Players (connections) ───────────────────────────────────────────────────
-
-players = {}
-nextPlayerId = 0
-
-function otherPlayers( excludeId ) {
-	var list = []
-	for ( var id in players ) {
-		if ( id != excludeId ) {
-			list.append( { id: id, x: players[ id ].x, z: players[ id ].z, rotationY: players[ id ].rotationY } )
-		}
-	}
-	return list
-}
-
-// A connection can go stuck/unresponsive (e.g. its socket died without the
-// framework noticing) without isClosed() reporting it — send() then blocks
-// on an internal lock until it times out and throws. Left uncaught, that
-// exception would abort whatever loop or onConnect flow was mid-broadcast,
-// silently dropping messages to every OTHER player queued after the bad one
-// too. Isolate each send so one dead connection can't jam the rest.
-function safeSend( playerId, payload ) {
-	try {
-		players[ playerId ].connection.send( payload )
-	} catch ( any e ) {
-		structDelete( players, playerId )
-	}
-}
-
-function broadcastExcept( excludeId, payload ) {
-	for ( var id in structCopy( players ) ) {
-		if ( id != excludeId && structKeyExists( players, id ) && !players[ id ].connection.isClosed() ) {
-			safeSend( id, payload )
-		}
-	}
-}
-
-function broadcastAll( payload ) {
-	for ( var id in structCopy( players ) ) {
-		if ( structKeyExists( players, id ) && !players[ id ].connection.isClosed() ) {
-			safeSend( id, payload )
-		}
-	}
-}
-
-function sendToPlayer( playerId, payload ) {
-	if ( structKeyExists( players, playerId ) && !players[ playerId ].connection.isClosed() ) {
-		safeSend( playerId, payload )
-	}
-}
-
-function kickExistingConnection( accountId ) {
-	for ( var pid in structCopy( players ) ) {
-		if ( players[ pid ].accountId == accountId ) {
-			persist( pid )
-			sendToPlayer( pid, { type: "kicked" } )
-			players[ pid ].connection.close()
-			structDelete( players, pid )
-			broadcastExcept( pid, { type: "leave", id: pid } )
-		}
-	}
-}
-
-function persist( playerId ) {
-	var p = players[ playerId ]
-	// Persist BASE stats, not the equipment-boosted effective ones — saving
-	// p.attackDamage/p.maxHp here would permanently bake gear bonuses into
-	// progression on every save/load cycle. hp is clamped to baseMaxHp so
-	// the stored row never shows hp > max_hp (max_hp in the DB is always
-	// the base value).
-	characterService.save( p.characterId, {
-		x: p.x, z: p.z, rotationY: p.rotationY, level: p.level,
-		hp: min( p.hp, p.baseMaxHp ), maxHp: p.baseMaxHp,
-		xp: p.xp, xpToNext: p.xpToNext, attackDamage: p.baseAttackDamage, gold: p.gold
-	} )
-}
-
-function handleChat( playerId, text ) {
-	var clean = trim( text ?: "" )
-	if ( !len( clean ) ) {
-		return
-	}
-	if ( len( clean ) > CHAT_MAX_LENGTH ) {
-		clean = left( clean, CHAT_MAX_LENGTH )
-	}
-	broadcastAll( { type: "chat", id: playerId, username: players[ playerId ].username, text: clean } )
-}
-
-function sendStats( playerId ) {
-	var p = players[ playerId ]
-	sendToPlayer( playerId, {
-		type: "stats", level: p.level, hp: p.hp, maxHp: p.maxHp, xp: p.xp,
-		xpToNext: p.xpToNext, attackDamage: p.attackDamage, gold: p.gold
-	} )
-}
-
-function sendInventory( playerId ) {
-	var p = players[ playerId ]
-	var items = []
-	for ( var row in inventoryService.list( p.characterId ) ) {
-		var itemType = ITEM_TYPES[ row.key ]
-		items.append( { key: row.key, name: itemType.name, usable: itemType.usable, quantity: row.quantity, equipSlot: itemType.equipSlot } )
-	}
-	sendToPlayer( playerId, { type: "inventory", items: items } )
-}
-
-function sendEquipment( playerId ) {
-	var p = players[ playerId ]
-	var slots = []
-	for ( var slot in EQUIP_SLOTS ) {
-		var key = p.equipment[ slot ]
-		slots.append( { slot: slot, key: key, name: len( key ) ? ITEM_TYPES[ key ].name : "" } )
-	}
-	sendToPlayer( playerId, { type: "equipment", slots: slots } )
-}
-
-// Recomputes effective (combat/HUD-facing) attackDamage/maxHp as base stats
-// (persisted, leveled up via grantXp) plus the sum of equipped items'
-// bonuses. Called after connect, level-up, and any equip/unequip.
-function recomputeEffectiveStats( playerId ) {
-	var p = players[ playerId ]
-	var bonusDamage = 0
-	var bonusMaxHp = 0
-	for ( var slot in structCopy( p.equipment ) ) {
-		var itemKey = p.equipment[ slot ]
-		if ( len( itemKey ) && structKeyExists( ITEM_TYPES, itemKey ) ) {
-			bonusDamage += ITEM_TYPES[ itemKey ].bonusAttackDamage
-			bonusMaxHp += ITEM_TYPES[ itemKey ].bonusMaxHp
-		}
-	}
-	p.attackDamage = p.baseAttackDamage + bonusDamage
-	p.maxHp = p.baseMaxHp + bonusMaxHp
-	if ( p.hp > p.maxHp ) {
-		p.hp = p.maxHp
-	}
-}
-
-function handleUseItem( playerId, itemKey ) {
-	var p = players[ playerId ]
-	if ( !structKeyExists( ITEM_TYPES, itemKey ) ) {
-		return
-	}
-	var itemType = ITEM_TYPES[ itemKey ]
-	if ( !itemType.usable || !inventoryService.hasItem( p.characterId, itemKey ) ) {
-		return
-	}
-
-	inventoryService.removeItem( p.characterId, itemKey )
-	p.hp = min( p.maxHp, p.hp + itemType.healAmount )
-	sendStats( playerId )
-	sendInventory( playerId )
-	persist( playerId )
-}
-
-function handleEquipItem( playerId, itemKey ) {
-	var p = players[ playerId ]
-	if ( !structKeyExists( ITEM_TYPES, itemKey ) ) {
-		return
-	}
-	var slot = ITEM_TYPES[ itemKey ].equipSlot
-	if ( !len( slot ) || !inventoryService.hasItem( p.characterId, itemKey ) ) {
-		return
-	}
-
-	var currentKey = p.equipment[ slot ]
-	if ( len( currentKey ) ) {
-		inventoryService.addItem( p.characterId, currentKey )
-		equipmentService.unequip( p.characterId, slot )
-	}
-	inventoryService.removeItem( p.characterId, itemKey )
-	equipmentService.equip( p.characterId, slot, itemKey )
-	p.equipment[ slot ] = itemKey
-
-	recomputeEffectiveStats( playerId )
-	sendStats( playerId )
-	sendInventory( playerId )
-	sendEquipment( playerId )
-	persist( playerId )
-}
-
-function handleUnequipItem( playerId, slot ) {
-	var p = players[ playerId ]
-	if ( !arrayContains( EQUIP_SLOTS, slot ) ) {
-		return
-	}
-	var currentKey = p.equipment[ slot ]
-	if ( !len( currentKey ) ) {
-		return
-	}
-
-	inventoryService.addItem( p.characterId, currentKey )
-	equipmentService.unequip( p.characterId, slot )
-	p.equipment[ slot ] = ""
-
-	recomputeEffectiveStats( playerId )
-	sendStats( playerId )
-	sendInventory( playerId )
-	sendEquipment( playerId )
-	persist( playerId )
-}
-
-function sendShopCatalog( playerId ) {
-	var items = []
-	for ( var key in SHOP_CATALOG ) {
-		var t = ITEM_TYPES[ key ]
-		items.append( { key: key, name: t.name, price: t.price, equipSlot: t.equipSlot } )
-	}
-	sendToPlayer( playerId, { type: "shopCatalog", items: items } )
-}
-
-function handleBuyItem( playerId, itemKey ) {
-	var p = players[ playerId ]
-	if ( !arrayContains( SHOP_CATALOG, itemKey ) || !structKeyExists( ITEM_TYPES, itemKey ) ) {
-		return
-	}
-	var price = ITEM_TYPES[ itemKey ].price
-	if ( price <= 0 || p.gold < price ) {
-		return
-	}
-
-	var npc = NPCS[ "shopkeeper1" ]
-	var dist = javaMath.sqrt( ( ( p.x - npc.x ) * ( p.x - npc.x ) ) + ( ( p.z - npc.z ) * ( p.z - npc.z ) ) )
-	if ( dist > SHOP_RANGE ) {
-		return
-	}
-
-	p.gold -= price
-	inventoryService.addItem( p.characterId, itemKey )
-	sendStats( playerId )
-	sendInventory( playerId )
-	persist( playerId )
-}
-
-function grantXp( playerId, amount ) {
-	var p = players[ playerId ]
-	p.xp += amount
-	while ( p.xp >= p.xpToNext ) {
-		p.xp -= p.xpToNext
-		p.level += 1
-		p.baseMaxHp += 20
-		p.baseAttackDamage += 3
-		p.xpToNext = round( p.xpToNext * 1.3 )
-	}
-	recomputeEffectiveStats( playerId )
-	p.hp = p.maxHp
-}
-
-function damagePlayer( playerId, amount ) {
-	var p = players[ playerId ]
-	p.hp -= amount
-	if ( p.hp <= 0 ) {
-		p.hp = 0
-		p.xp = max( 0, p.xp - int( p.xp * DEATH_XP_PENALTY ) )
-		sendStats( playerId )
-		sendToPlayer( playerId, { type: "died" } )
-		p.respawning = true
-		p.respawnAt = getTickCount() / 1000 + PLAYER_RESPAWN_DELAY
-	} else {
-		sendStats( playerId )
-	}
-}
-
-// ── Monsters ─────────────────────────────────────────────────────────────
-
-monsters = {}
-nextMonsterId = 0
-
-PI = 3.141592653589793
-
-function randomOffset( bounds ) {
-	return ( rand() - 0.5 ) * 2 * bounds
-}
-
-// Random point in the ring [minRadius, maxRadius] around the origin — how a
-// zone's monster homes are scattered across its band without spilling into
-// the zone on either side of it.
-function randomPointInRing( minRadius, maxRadius ) {
-	var angle = rand() * 2 * PI
-	var radius = minRadius + ( rand() * ( maxRadius - minRadius ) )
-	return { x: javaMath.cos( angle ) * radius, z: javaMath.sin( angle ) * radius }
-}
-
-function spawnMonster( typeKey, zone ) {
-	nextMonsterId++
-	var id = "m#nextMonsterId#"
-	var type = MONSTER_TYPES[ typeKey ]
-	var home = randomPointInRing( zone.minRadius, zone.maxRadius )
-	monsters[ id ] = {
-		id: id, type: typeKey, name: type.name, level: type.level,
-		x: home.x, z: home.z, rotationY: 0,
-		hp: type.hp, maxHp: type.hp, damage: type.damage,
-		xpReward: type.xpReward, goldMin: type.goldMin, goldMax: type.goldMax,
-		aggressive: type.aggressive, aggroRadius: type.aggroRadius,
-		attackRange: type.attackRange, attackCooldown: type.attackCooldown,
-		speed: type.speed, baseY: type.baseY,
-		dropItem: type.dropItem, dropChance: type.dropChance,
-		homeX: home.x, homeZ: home.z,
-		wanderTargetX: home.x, wanderTargetZ: home.z, wanderTimer: 0,
-		attackTimer: 0, state: "wander", targetPlayerId: "",
-		alive: true, respawnAt: 0
-	}
-}
-
-for ( zone in ZONES ) {
+for ( zone in gameConfig.getZones() ) {
 	for ( typeKey in zone.spawns ) {
 		for ( i = 1; i <= zone.spawns[ typeKey ]; i++ ) {
-			spawnMonster( typeKey, zone )
+			monsterService.spawnMonster( typeKey, zone )
 		}
 	}
 }
 
-function monsterSnapshot() {
-	var list = []
-	for ( var id in monsters ) {
-		var m = monsters[ id ]
-		list.append( { id: id, type: m.type, level: m.level, x: m.x, z: m.z, rotationY: m.rotationY, hp: m.hp, maxHp: m.maxHp, alive: m.alive } )
-	}
-	return list
-}
-
-function handleAttack( playerId, targetId, isSkill ) {
-	var p = players[ playerId ]
-	if ( p.respawning ?: false ) {
-		return
-	}
-	if ( !structKeyExists( monsters, targetId ) ) {
-		return
-	}
-	var m = monsters[ targetId ]
-	if ( !m.alive ) {
-		return
-	}
-
-	var now = getTickCount() / 1000
-	var readyAt = isSkill ? ( p.skillReadyAt ?: 0 ) : ( p.attackReadyAt ?: 0 )
-	if ( now < readyAt ) {
-		return
-	}
-
-	var dist = javaMath.sqrt( ( ( p.x - m.x ) * ( p.x - m.x ) ) + ( ( p.z - m.z ) * ( p.z - m.z ) ) )
-	if ( dist > ATTACK_RANGE ) {
-		return
-	}
-
-	// Only monsters in the player's front hemisphere are attackable — the
-	// same forward vector player.js's own movement code derives from
-	// rotationY (sin/cos of the Y-axis facing angle), dotted against the
-	// direction to the target. A negative dot product means the target is
-	// behind the player.
-	var forwardX = javaMath.sin( p.rotationY )
-	var forwardZ = javaMath.cos( p.rotationY )
-	var facingDot = ( forwardX * ( m.x - p.x ) ) + ( forwardZ * ( m.z - p.z ) )
-	if ( facingDot < 0 ) {
-		return
-	}
-
-	if ( isSkill ) {
-		p.skillReadyAt = now + SKILL_COOLDOWN
-	} else {
-		p.attackReadyAt = now + ATTACK_COOLDOWN
-	}
-
-	m.hp -= p.attackDamage * ( isSkill ? SKILL_MULTIPLIER : 1 )
-	if ( m.aggressive ) {
-		m.state = "chase"
-		m.targetPlayerId = playerId
-	}
-
-	if ( m.hp <= 0 ) {
-		m.hp = 0
-		m.alive = false
-		m.respawnAt = now + MONSTER_RESPAWN_DELAY
-		m.state = "wander"
-		m.targetPlayerId = ""
-
-		grantXp( playerId, m.xpReward )
-		p.gold += m.goldMin + int( rand() * ( m.goldMax - m.goldMin + 1 ) )
-		sendStats( playerId )
-
-		if ( rand() < m.dropChance ) {
-			inventoryService.addItem( p.characterId, m.dropItem )
-			sendInventory( playerId )
-		}
-
-		persist( playerId )
-	}
-
-	broadcastAll( { type: "monsterUpdate", id: targetId, hp: m.hp, alive: m.alive } )
-}
-
-function tickPlayerRespawns() {
-	var now = getTickCount() / 1000
-	for ( var pid in structCopy( players ) ) {
-		var p = players[ pid ]
-		if ( ( p.respawning ?: false ) && now >= p.respawnAt ) {
-			p.respawning = false
-			p.hp = p.maxHp
-			p.x = 0
-			p.z = 0
-			p.rotationY = 0
-			sendToPlayer( pid, { type: "respawn", x: 0, z: 0, rotationY: 0 } )
-			sendStats( pid )
-			broadcastExcept( pid, { type: "move", id: pid, x: 0, z: 0, rotationY: 0 } )
-		}
-	}
-}
-
-function tickMonsterAI() {
-	for ( var mid in monsters ) {
-		var m = monsters[ mid ]
-
-		if ( !m.alive ) {
-			if ( getTickCount() / 1000 >= m.respawnAt ) {
-				m.alive = true
-				m.hp = m.maxHp
-				m.x = m.homeX
-				m.z = m.homeZ
-				m.state = "wander"
-				m.targetPlayerId = ""
-			}
-			continue
-		}
-
-		if ( m.aggressive && m.state != "chase" ) {
-			var nearestId = ""
-			var nearestDist = m.aggroRadius
-			for ( var pid in players ) {
-				var p = players[ pid ]
-				if ( p.respawning ?: false ) {
-					continue
-				}
-				var d = javaMath.sqrt( ( ( p.x - m.x ) * ( p.x - m.x ) ) + ( ( p.z - m.z ) * ( p.z - m.z ) ) )
-				if ( d <= nearestDist ) {
-					nearestDist = d
-					nearestId = pid
-				}
-			}
-			if ( len( nearestId ) ) {
-				m.state = "chase"
-				m.targetPlayerId = nearestId
-			}
-		}
-
-		if ( m.state == "chase" ) {
-			if ( !structKeyExists( players, m.targetPlayerId ) || ( players[ m.targetPlayerId ].respawning ?: false ) ) {
-				m.state = "wander"
-				m.targetPlayerId = ""
-			} else {
-				var target = players[ m.targetPlayerId ]
-				var dx = target.x - m.x
-				var dz = target.z - m.z
-				var dist = javaMath.sqrt( ( ( dx ) * ( dx ) ) + ( ( dz ) * ( dz ) ) )
-				if ( dist > m.aggroRadius * 1.5 ) {
-					m.state = "wander"
-					m.targetPlayerId = ""
-				} else if ( dist > m.attackRange * 0.8 ) {
-					m.x += ( dx / dist ) * m.speed * TICK_SECONDS
-					m.z += ( dz / dist ) * m.speed * TICK_SECONDS
-					m.rotationY = javaMath.atan2( dx / dist, dz / dist )
-				} else {
-					m.attackTimer -= TICK_SECONDS
-					if ( m.attackTimer <= 0 ) {
-						m.attackTimer = m.attackCooldown
-						damagePlayer( m.targetPlayerId, m.damage )
-					}
-				}
-			}
-		} else {
-			m.wanderTimer -= TICK_SECONDS
-			if ( m.wanderTimer <= 0 ) {
-				m.wanderTargetX = m.homeX + randomOffset( WANDER_RADIUS )
-				m.wanderTargetZ = m.homeZ + randomOffset( WANDER_RADIUS )
-				m.wanderTimer = 2 + rand() * 3
-			}
-			var dx = m.wanderTargetX - m.x
-			var dz = m.wanderTargetZ - m.z
-			var dist = javaMath.sqrt( ( ( dx ) * ( dx ) ) + ( ( dz ) * ( dz ) ) )
-			if ( dist > 0.1 ) {
-				m.x += ( dx / dist ) * m.speed * 0.5 * TICK_SECONDS
-				m.z += ( dz / dist ) * m.speed * 0.5 * TICK_SECONDS
-				m.rotationY = javaMath.atan2( dx / dist, dz / dist )
-			}
-		}
-	}
-}
-
-app.schedule( TICK_SECONDS * 1000, () => {
-	tickPlayerRespawns()
-	tickMonsterAI()
-	broadcastAll( { type: "monsters", list: monsterSnapshot() } )
+app.schedule( gameConfig.getTickSeconds() * 1000, () => {
+	playerService.tickPlayerRespawns()
+	monsterService.tickMonsterAI()
+	playerService.broadcastAll( { type: "monsters", list: monsterService.monsterSnapshot() } )
 } )
 
 // ── Real-time player sync ───────────────────────────────────────────────
@@ -686,48 +58,31 @@ app.ws( "/game", ( connection ) => {
 		connection.close()
 		return
 	}
-	var accountId = info.accountId
-	var characterId = info.characterId
 
-	kickExistingConnection( accountId )
+	var playerId = playerService.connect( connection, info.accountId, info.characterId )
 
-	nextPlayerId++
-	var playerId = "p#nextPlayerId#"
-	var saved = characterService.load( characterId )
-	saved[ "accountId" ] = accountId
-	saved[ "characterId" ] = characterId
-	saved[ "connection" ] = connection
-	saved[ "lastSaveAt" ] = 0
-	saved[ "respawning" ] = false
-	saved[ "attackReadyAt" ] = 0
-	saved[ "skillReadyAt" ] = 0
-	saved[ "username" ] = authService.usernameForAccountId( accountId )
-	saved[ "baseAttackDamage" ] = saved.attackDamage
-	saved[ "baseMaxHp" ] = saved.maxHp
-	saved[ "equipment" ] = { weapon: "", helmet: "", chest: "", trinket: "" }
-	for ( var row in equipmentService.list( characterId ) ) {
-		saved.equipment[ row.slot ] = row.key
-	}
-	players[ playerId ] = saved
-	recomputeEffectiveStats( playerId )
-
-	connection.send( { type: "welcome", id: playerId, players: otherPlayers( playerId ), monsters: monsterSnapshot(), npcs: npcSnapshot(), zones: zoneSnapshot() } )
-	broadcastExcept( playerId, { type: "join", id: playerId, x: saved.x, z: saved.z, rotationY: saved.rotationY } )
+	connection.send( {
+		type: "welcome", id: playerId, players: playerService.otherPlayers( playerId ),
+		monsters: monsterService.monsterSnapshot(), npcs: gameConfig.npcSnapshot(), zones: gameConfig.zoneSnapshot(),
+		props: gameConfig.getProps(), mountains: gameConfig.getMountains()
+	} )
+	var startPos = playerService.getPlayers()[ playerId ]
+	playerService.broadcastExcept( playerId, { type: "join", id: playerId, x: startPos.x, z: startPos.z, rotationY: startPos.rotationY } )
 	// The client's initial player object comes from the REST character-select
 	// response, which is always the BASE (pre-equipment) stats — push the
 	// recomputed effective stats now so gear equipped in a previous session
 	// is reflected immediately rather than only after the next equip/level-up.
-	sendStats( playerId )
-	sendInventory( playerId )
-	sendEquipment( playerId )
-	sendShopCatalog( playerId )
+	playerService.sendStats( playerId )
+	playerService.sendInventory( playerId )
+	playerService.sendEquipment( playerId )
+	playerService.sendShopCatalog( playerId )
 
 	connection.onMessage( ( text ) => {
 		var data = JSONDeserialize( text )
-		var p = players[ playerId ]
+		var p = playerService.getPlayers()[ playerId ]
 
 		if ( data.type == "chat" ) {
-			handleChat( playerId, data.text )
+			playerService.handleChat( playerId, data.text )
 			return
 		}
 
@@ -736,37 +91,26 @@ app.ws( "/game", ( connection ) => {
 		}
 
 		if ( data.type == "move" ) {
-			p.x = data.x
-			p.z = data.z
-			p.rotationY = data.rotationY
-			broadcastExcept( playerId, { type: "move", id: playerId, x: data.x, z: data.z, rotationY: data.rotationY } )
+			playerService.handleMove( playerId, data.x, data.z, data.rotationY )
 		} else if ( data.type == "attack" ) {
-			handleAttack( playerId, data.targetId, false )
+			monsterService.handleAttack( playerId, data.targetId, false )
 		} else if ( data.type == "skill" ) {
-			handleAttack( playerId, data.targetId, true )
+			monsterService.handleAttack( playerId, data.targetId, true )
 		} else if ( data.type == "useItem" ) {
-			handleUseItem( playerId, data.itemKey )
+			playerService.handleUseItem( playerId, data.itemKey )
 		} else if ( data.type == "equipItem" ) {
-			handleEquipItem( playerId, data.itemKey )
+			playerService.handleEquipItem( playerId, data.itemKey )
 		} else if ( data.type == "unequipItem" ) {
-			handleUnequipItem( playerId, data.slot )
+			playerService.handleUnequipItem( playerId, data.slot )
 		} else if ( data.type == "buyItem" ) {
-			handleBuyItem( playerId, data.itemKey )
+			playerService.handleBuyItem( playerId, data.itemKey )
 		}
 
-		var now = getTickCount() / 1000
-		if ( now - p.lastSaveAt >= SAVE_INTERVAL_SECONDS ) {
-			p.lastSaveAt = now
-			persist( playerId )
-		}
+		playerService.maybeAutosave( playerId )
 	} )
 
 	connection.onClose( ( code, reason ) => {
-		if ( structKeyExists( players, playerId ) ) {
-			persist( playerId )
-			structDelete( players, playerId )
-		}
-		broadcastExcept( playerId, { type: "leave", id: playerId } )
+		playerService.disconnect( playerId )
 	} )
 } )
 

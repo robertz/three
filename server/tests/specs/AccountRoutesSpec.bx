@@ -1,0 +1,172 @@
+/**
+ * End-to-end: spins up a real BoxExpress app with AccountRoutes mounted at
+ * "/api" (exactly how server/app.bxs mounts it) on a throwaway port, and
+ * hits it with real HTTP requests — the same manual curl testing done
+ * during development, now automated. Round-trips through the real "three"
+ * database; every test registers its own throwaway account (unique
+ * username) and afterEach deletes it.
+ */
+class extends="testbox.system.BaseSpec" {
+
+	function beforeAll() {
+		variables.testPort = 4521
+		variables.baseUrl = "http://localhost:#variables.testPort#/api"
+		variables.client = new "../helpers/HttpClient"()
+
+		variables.authService = new models.AuthService()
+		variables.characterService = new models.CharacterService()
+		var accountRoutes = new routes.AccountRoutes( variables.authService, variables.characterService )
+
+		variables.app = boxExpress()
+		variables.app.use( boxExpressJSON() )
+		variables.app.use( "/api", accountRoutes.getRouter() )
+		variables.app.listen( port = variables.testPort, options = { block: false } )
+		sleep( 300 )
+	}
+
+	function afterAll() {
+		variables.app.close()
+	}
+
+	// Registers a throwaway account and returns { username, cookie }. Stashed
+	// on variables (not just returned) so afterEach can clean it up even if
+	// the test itself never reads the return value's username again.
+	private function _registerAccount() {
+		var username = "spec_route_" & createUUID()
+		var res = variables.client.post( variables.baseUrl & "/register", '{"username":"#username#","password":"testpass123"}' )
+		var cookie = listFirst( res.setCookie, ";" )
+		variables.lastUsername = username
+		return { username: username, cookie: cookie, response: res }
+	}
+
+	function run() {
+		describe( "AccountRoutes", function() {
+
+			afterEach( function() {
+				if ( structKeyExists( variables, "lastUsername" ) ) {
+					queryExecute( "DELETE FROM accounts WHERE username = :username", { username: variables.lastUsername } )
+					structDelete( variables, "lastUsername" )
+				}
+			} )
+
+			it( "POST /register creates an account and starts a session with an empty character list", function() {
+				var reg = _registerAccount()
+
+				expect( reg.response.statusCode ).toBe( 200 )
+				expect( reg.response.body ).toInclude( '"ok":true' )
+				expect( reg.response.body ).toInclude( '"characters":[]' )
+				expect( len( reg.cookie ) ).toBeGT( 0 )
+			} )
+
+			it( "POST /register rejects a duplicate username", function() {
+				var first = _registerAccount()
+				var dupe = variables.client.post( variables.baseUrl & "/register", '{"username":"#first.username#","password":"testpass123"}' )
+
+				expect( dupe.statusCode ).toBe( 400 )
+				expect( dupe.body ).toInclude( '"ok":false' )
+			} )
+
+			it( "POST /login succeeds with correct credentials", function() {
+				var reg = _registerAccount()
+				var login = variables.client.post( variables.baseUrl & "/login", '{"username":"#reg.username#","password":"testpass123"}' )
+
+				expect( login.statusCode ).toBe( 200 )
+				expect( login.body ).toInclude( '"ok":true' )
+			} )
+
+			it( "POST /login rejects the wrong password", function() {
+				var reg = _registerAccount()
+				var login = variables.client.post( variables.baseUrl & "/login", '{"username":"#reg.username#","password":"wrongpassword"}' )
+
+				expect( login.statusCode ).toBe( 401 )
+			} )
+
+			it( "GET /me without a session cookie is unauthorized", function() {
+				var res = variables.client.get( variables.baseUrl & "/me" )
+				expect( res.statusCode ).toBe( 401 )
+			} )
+
+			it( "GET /me with a valid session cookie returns the character list", function() {
+				var reg = _registerAccount()
+				var res = variables.client.getWithHeaders( variables.baseUrl & "/me", { "Cookie": reg.cookie } )
+
+				expect( res.statusCode ).toBe( 200 )
+				expect( res.body ).toInclude( '"characters":[]' )
+			} )
+
+			it( "POST /logout clears the session so a subsequent /me is unauthorized", function() {
+				var reg = _registerAccount()
+				variables.client.requestWithHeaders( "POST", variables.baseUrl & "/logout", { "Cookie": reg.cookie } )
+				var res = variables.client.getWithHeaders( variables.baseUrl & "/me", { "Cookie": reg.cookie } )
+
+				expect( res.statusCode ).toBe( 401 )
+			} )
+
+			it( "POST /characters creates a character that then appears in the list", function() {
+				var reg = _registerAccount()
+				variables.client.requestWithHeaders( "POST", variables.baseUrl & "/characters", { "Cookie": reg.cookie }, '{"name":"RouteHero"}' )
+				var res = variables.client.getWithHeaders( variables.baseUrl & "/characters", { "Cookie": reg.cookie } )
+
+				expect( res.body ).toInclude( "RouteHero" )
+			} )
+
+			it( "POST /characters rejects a 4th character once the account is at the cap", function() {
+				var reg = _registerAccount()
+				for ( var i = 1; i <= 3; i++ ) {
+					variables.client.requestWithHeaders( "POST", variables.baseUrl & "/characters", { "Cookie": reg.cookie }, '{"name":"Hero#i#"}' )
+				}
+				var fourth = variables.client.requestWithHeaders( "POST", variables.baseUrl & "/characters", { "Cookie": reg.cookie }, '{"name":"HeroFour"}' )
+
+				expect( fourth.statusCode ).toBe( 400 )
+			} )
+
+			it( "POST /characters/:id/select succeeds for a character the account owns", function() {
+				var reg = _registerAccount()
+				variables.client.requestWithHeaders( "POST", variables.baseUrl & "/characters", { "Cookie": reg.cookie }, '{"name":"SelectHero"}' )
+				var list = variables.client.getWithHeaders( variables.baseUrl & "/characters", { "Cookie": reg.cookie } )
+				var characterId = _firstCharacterId( list.body )
+
+				var select = variables.client.requestWithHeaders( "POST", variables.baseUrl & "/characters/#characterId#/select", { "Cookie": reg.cookie } )
+
+				expect( select.statusCode ).toBe( 200 )
+				expect( select.body ).toInclude( "SelectHero" )
+			} )
+
+			it( "POST /characters/:id/select rejects a character id belonging to a different account", function() {
+				var owner = _registerAccount()
+				variables.client.requestWithHeaders( "POST", variables.baseUrl & "/characters", { "Cookie": owner.cookie }, '{"name":"OwnedHero"}' )
+				var list = variables.client.getWithHeaders( variables.baseUrl & "/characters", { "Cookie": owner.cookie } )
+				var characterId = _firstCharacterId( list.body )
+
+				var intruder = _registerAccount()
+				var select = variables.client.requestWithHeaders( "POST", variables.baseUrl & "/characters/#characterId#/select", { "Cookie": intruder.cookie } )
+
+				expect( select.statusCode ).toBe( 403 )
+
+				// two accounts registered in this test — clean up the one
+				// _registerAccount()'s own stash didn't keep (the second call
+				// overwrote variables.lastUsername, so afterEach only sees "owner").
+				queryExecute( "DELETE FROM accounts WHERE username = :username", { username: owner.username } )
+			} )
+
+			it( "DELETE /characters/:id removes it from the account's list", function() {
+				var reg = _registerAccount()
+				variables.client.requestWithHeaders( "POST", variables.baseUrl & "/characters", { "Cookie": reg.cookie }, '{"name":"DoomedHero"}' )
+				var list = variables.client.getWithHeaders( variables.baseUrl & "/characters", { "Cookie": reg.cookie } )
+				var characterId = _firstCharacterId( list.body )
+
+				var del = variables.client.requestWithHeaders( "DELETE", variables.baseUrl & "/characters/#characterId#", { "Cookie": reg.cookie } )
+
+				expect( del.statusCode ).toBe( 200 )
+				expect( del.body ).notToInclude( "DoomedHero" )
+			} )
+
+		} )
+	}
+
+	private function _firstCharacterId( jsonBody ) {
+		var parsed = JSONDeserialize( jsonBody )
+		return parsed.characters[ 1 ].id
+	}
+
+}
