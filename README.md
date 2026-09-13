@@ -1,8 +1,10 @@
 # Three
 
-An open-world game in the style of Ragnarok Online, built with Three.js on
-the client and [BoxLang Express](https://github.com/robertz/boxlang-express)
-on the backend.
+An open-world fantasy MMO in the style of World of Warcraft, built with
+Three.js on the client and
+[BoxLang Express](https://github.com/robertz/boxlang-express) on the backend.
+(Originally prototyped with Ragnarok Online naming/theming — see Milestone 18
+for the pivot.)
 
 ## Stack
 
@@ -228,8 +230,149 @@ the `combat.targetId =` shortcut used in earlier milestones) that
 targeting now sets the correct id, and that both auto-attack and the `1`
 skill key land real, server-resolved damage afterward.
 
+Bugfix (2026-09-13): the Soldier model's own front faced -Z, opposite the
+game's forward convention (+Z — see `player.js`'s movement vector), so the
+third-person camera (trailing behind at -Z) was looking straight at the
+character's face while it walked toward the camera instead of away from
+it. Fixed in `character.js` by rotating just the cloned model 180° around
+Y (`scene.rotation.y = Math.PI`), leaving the outer group's own rotation —
+the one movement, collision, the camera, and network sync all actually
+read — untouched. Applies to remote players too, since they share the
+same `createCharacterMesh()`. Verified visually: walking now shows the
+character's back (backpack visible) receding from camera, and turning
+keeps the back facing the camera correctly from any heading.
+
+Milestone 16 (done): mouse-look camera — hold right mouse button and drag
+to look around. Horizontal drag turns the character itself
+(`player.rotation.y`, same value A/D turning already writes to) rather
+than orbiting the camera independently, so the camera just stays behind
+wherever the character ends up facing — matching typical MMO right-click
+"look/steer" convention. Vertical drag adjusts a camera-only `pitchOffset`
+(clamped in `camera.js` so you can't flip over or clip through the
+ground); dragging up gives an aerial look-down angle, down a low look-up
+angle. `combat.js`'s click-to-target is left-click only (`e.button === 0`)
+so a right-drag doesn't also fire a targeting raycast, and `contextmenu`
+is suppressed on the canvas so right-click doesn't pop the browser's own
+menu. Verified: right-drag changes `player.rotation.y` directly (camera
+stays glued behind), pitch clamps correctly at both extremes, left-click
+targeting still works, and right-click alone doesn't set a target.
+
+Milestone 17 (done): facing-gated combat — a monster can only be attacked
+(basic attack or the `1` skill) while it's in the player's front
+hemisphere, not directly behind them. Enforced server-side in
+`handleAttack()` (`server/app.bxs`): the player's forward vector
+(`sin(rotationY)`, `cos(rotationY)`, the same derivation `player.js`'s
+own movement code uses) dotted against the direction to the target — a
+negative dot product means behind, and the attack is rejected regardless
+of range. This is the actual authority; a matching check
+(`isInFront()` in `client/src/combat.js`) also gates the client's
+auto-attack/skill calls so a target that's already behind doesn't even
+attempt the network round-trip. Verified by calling
+`network.sendAttack()` directly (bypassing the client-side check
+entirely) against a monster positioned behind the player — HP stayed
+unchanged, confirming the server itself enforces this, not just client
+UX — and against one in front, where the attack landed normally.
+
+Milestone 18 (done): camera ground clamp — `updateCamera()`
+(`client/src/camera.js`) now floors the desired and lerped camera height at
+`MIN_HEIGHT = 1`, so dragging the pitch to its steepest look-down angle can
+no longer push the camera into/under the ground plane. Verified by forcing
+`cameraController.pitchOffset` to both clamp extremes: the low extreme now
+settles at `y = 1` instead of going negative, the high extreme still rises
+normally, and neutral pitch is unaffected.
+
+Milestone 19 (done): WASD strafing — `A`/`D` now strafe left/right relative
+to facing instead of turning the character (turning is handled entirely by
+right-click-drag, Milestone 16), and `W`/`S` remain forward/back. Verified
+with synthetic key events: `A`/`D` move the player sideways by equal,
+opposite amounts with `rotation.y` untouched, `W` still moves straight
+forward, and (after a follow-up correction) `A` strafes right/`D` strafes
+left per feedback swapping the initial mapping.
+
+Milestone 20 (done): position interpolation — monsters and remote players
+used to snap straight to each server position update, which was visibly
+choppy since `TICK_SECONDS` (0.2s server tick) is far slower than the
+render loop. `client/src/interpolate.js` adds a frame-rate-independent
+exponential smoothing helper; `monsters.js`'s `updateMonsterPositions()`
+and `network.js`'s remote-player loop now chase a `target` position/heading
+every frame instead of snapping to it. Gameplay logic (combat range/facing
+checks) still reads the raw authoritative server position, only the visual
+mesh is smoothed. Verified by sampling a wandering monster's mesh position
+every 50ms: on each new snapshot the mesh visibly closes the gap over
+several frames rather than teleporting.
+
+Milestone 21 (done): fantasy theme naming pass — first step of pivoting the
+game from its original Ragnarok-Online-inspired theme to a World-of-Warcraft-
+style fantasy setting. Renamed the `zeny` currency to `gold` end-to-end
+(server `MONSTER_TYPES`/`ITEM_TYPES`/player struct, `CharacterService.bx`
+queries, the live MySQL `characters.zeny` column via `ALTER TABLE ... CHANGE
+COLUMN`, and every client reference down to the HUD's `g` suffix), renamed
+the "Poring" monster type to "Boar" (server `MONSTER_TYPES` key/name, client
+`monsters.js` model/scale/name maps), and renamed the `1`-key skill's HUD
+label from "Bash" to "Heroic Strike". Visual/UI restyling and swapping the
+placeholder monster/character models for more WoW-appropriate art are
+tracked as follow-up passes, not done here. Verified end-to-end after a
+server restart (BoxLang scripts aren't hot-reloaded) and a client rebuild:
+fresh login shows `0g` and "Heroic Strike [1]" in the HUD, and a spawned
+monster's `type`/`name` read back as `"boar"`/`"Boar"`.
+
+Milestone 22 (done): fantasy theme pass 2/3 — HUD visual restyle. Reworked
+`client/src/hud.js` from plain flat panels into a WoW-Classic-inspired look:
+gold-bordered panels with small corner "rivets" (drawn via layered CSS
+`radial-gradient`s, no image assets), the 'Cinzel' Google Font for all HUD
+text (`client/index.html`), a circular portrait with a level badge, a
+numeric HP bar overlay, a gold-coin currency display, and an icon-style
+skill slot (bordered square + key label) instead of a plain labeled bar.
+Target frame restyled to match. Death screen changed from a plain "YOU
+DIED" to an ornate red-tinted "You Have Died" / "Resurrecting..." banner.
+Pure CSS/markup change — no HUD API changes, so `main.js` didn't need
+touching. Verified in-browser: portrait/level badge/HP-XP bars/gold
+display/skill slot all render correctly with a live character, and the
+target frame and death screen (exercised by temporarily monkey-patching
+`hud.updateTarget`/`hud.setDead` past the tick loop's own calls, since
+nothing in-session was actually targetable/dead at test time) both match
+the same theme.
+
+Milestone 23 (done): fantasy theme pass 3/3 — model swap. Replaced the
+placeholder character/monster models with CC0 assets more in line with the
+WoW-style theme: the player is now KayKit's "Knight" (`client/public/models/
+knight.glb`, from Kay Lousberg's free "KayKit - Character Pack: Adventurers"
+on itch.io), and the "Boar"/"Wolf" monsters use Quaternius's CC0 Pig and
+Wolf models (`pig.glb`/`wolf.glb`, via poly.pizza mirrors of quaternius.com)
+instead of the old three.js sample Duck/Fox. KayKit ships characters with no
+baked-in animations — clips live in separate rig-matched animation-library
+files (`rig_medium_movement.glb`'s `Walking_A`, `rig_medium_general.glb`'s
+`Idle_A`) applied to the Knight via `clipAction()` after confirming (by
+diffing the two files' skin joint names) that both share the exact same
+23-bone rig; `models.js` gained a `findAnimation(key, name)` helper for
+pulling a clip out of a template that's never itself cloned/rendered. The
+Knight's own front faces +Z (opposite the old Soldier model), so the
+180°-flip workaround in `character.js` was removed rather than doubled up.
+The Pig has no walk cycle (only `Armature|Idle`/`Armature|Jump`) — rather
+than require both an idle and a walk clip like before, `createMonsterMesh()`
+(`monsters.js`) and `setAnimation()` (`models.js`) were loosened to tolerate
+a monster type with idle-only animation (plays idle forever, never told to
+switch to a walk it doesn't have) instead of skipping animation setup
+entirely. All three new monster-adjacent models needed their scale tuned by
+eye same as before (Pig 0.15, Wolf 0.35) — the Wolf in particular has a
+deceptively huge native bounding box (≈1×2.7×5.3 units unscaled).
+**Testing gotcha**: positioning a debug camera/player directly in front of a
+small test object at the exact same on-screen position as the player's own
+body silhouette makes the object appear completely invisible — it's simply
+occluded behind the closer, larger player mesh from the camera's viewpoint,
+not a rendering bug. Caught by projecting the object's bounding-box corners
+to NDC space (all within the visible [-1,1] range, centered on screen) and
+only then realizing they overlapped the player's own on-screen footprint;
+confirmed by moving the test object sideways, after which it rendered
+exactly as expected. Downloaded via itch.io's and poly.pizza's actual
+network-level download flow (their pages don't expose plain static URLs) —
+itch.io signs a short-lived direct-storage URL per file after clicking
+through "No thanks, just take me to the downloads", visible in the
+browser's network requests once triggered.
+
 Not yet wired up: multiple characters per account, equipment slots, a shop
-to spend zeny.
+to spend gold, and matching the new fantasy theme in the chat/inventory
+panels and login screen (all three still use the original plain styling).
 
 ## Running it
 

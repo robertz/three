@@ -1,8 +1,10 @@
 import { createPlayerMesh } from "./player.js";
 import { applyMonsterSnapshot, flashHit } from "./monsters.js";
+import { lerp, lerpAngle, smoothingFactor } from "./interpolate.js";
 
 const WS_URL = "ws://localhost:3001/game";
 const SEND_INTERVAL = 0.1;
+const POSITION_SMOOTHING = 10;
 
 export function connectNetwork(scene, player, registry, { onDied, onRespawn, onChat, onInventory, onKicked } = {}) {
   const state = {
@@ -47,8 +49,7 @@ export function connectNetwork(scene, player, registry, { onDied, onRespawn, onC
       case "move": {
         const remote = state.remotePlayers.get(msg.id);
         if (remote) {
-          remote.position.set(msg.x, 0, msg.z);
-          remote.rotation.y = msg.rotationY;
+          remote.target = { x: msg.x, z: msg.z, rotationY: msg.rotationY };
         }
         break;
       }
@@ -81,7 +82,7 @@ export function connectNetwork(scene, player, registry, { onDied, onRespawn, onC
           xp: msg.xp,
           xpToNext: msg.xpToNext,
           attackDamage: msg.attackDamage,
-          zeny: msg.zeny,
+          gold: msg.gold,
         });
         break;
       case "chat":
@@ -113,13 +114,18 @@ function addRemotePlayer(state, scene, data) {
   const mesh = createPlayerMesh();
   mesh.position.set(data.x, 0, data.z);
   mesh.rotation.y = data.rotationY;
+  mesh.target = { x: data.x, z: data.z, rotationY: data.rotationY };
   scene.add(mesh);
   state.remotePlayers.set(data.id, mesh);
 }
 
 export function updateNetwork(state, player, delta) {
+  const t = smoothingFactor(delta, POSITION_SMOOTHING);
   for (const remote of state.remotePlayers.values()) {
     remote.mixer.update(delta);
+    remote.position.x = lerp(remote.position.x, remote.target.x, t);
+    remote.position.z = lerp(remote.position.z, remote.target.z, t);
+    remote.rotation.y = lerpAngle(remote.rotation.y, remote.target.rotationY, t);
   }
 
   state.sendTimer -= delta;

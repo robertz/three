@@ -77,13 +77,13 @@ SAVE_INTERVAL_SECONDS = 5
 CHAT_MAX_LENGTH = 200
 
 MONSTER_TYPES = {
-	poring: {
-		name: "Poring", hp: 30, damage: 0, xpReward: 10, zenyMin: 5, zenyMax: 15,
+	boar: {
+		name: "Boar", hp: 30, damage: 0, xpReward: 10, goldMin: 5, goldMax: 15,
 		aggressive: false, aggroRadius: 0, attackRange: 1.2, attackCooldown: 1.5, speed: 1.2, baseY: 0.6,
 		dropItem: "apple", dropChance: 0.3
 	},
 	wolf: {
-		name: "Wolf", hp: 50, damage: 8, xpReward: 25, zenyMin: 15, zenyMax: 30,
+		name: "Wolf", hp: 50, damage: 8, xpReward: 25, goldMin: 15, goldMax: 30,
 		aggressive: true, aggroRadius: 8, attackRange: 1.6, attackCooldown: 1.5, speed: 2.6, baseY: 0.5,
 		dropItem: "wolfFang", dropChance: 0.4
 	}
@@ -147,7 +147,7 @@ function persist( playerId ) {
 	var p = players[ playerId ]
 	characterService.save( p.accountId, {
 		x: p.x, z: p.z, rotationY: p.rotationY, level: p.level, hp: p.hp, maxHp: p.maxHp,
-		xp: p.xp, xpToNext: p.xpToNext, attackDamage: p.attackDamage, zeny: p.zeny
+		xp: p.xp, xpToNext: p.xpToNext, attackDamage: p.attackDamage, gold: p.gold
 	} )
 }
 
@@ -166,7 +166,7 @@ function sendStats( playerId ) {
 	var p = players[ playerId ]
 	sendToPlayer( playerId, {
 		type: "stats", level: p.level, hp: p.hp, maxHp: p.maxHp, xp: p.xp,
-		xpToNext: p.xpToNext, attackDamage: p.attackDamage, zeny: p.zeny
+		xpToNext: p.xpToNext, attackDamage: p.attackDamage, gold: p.gold
 	} )
 }
 
@@ -244,7 +244,7 @@ function spawnMonster( typeKey ) {
 		id: id, type: typeKey, name: type.name,
 		x: homeX, z: homeZ, rotationY: 0,
 		hp: type.hp, maxHp: type.hp, damage: type.damage,
-		xpReward: type.xpReward, zenyMin: type.zenyMin, zenyMax: type.zenyMax,
+		xpReward: type.xpReward, goldMin: type.goldMin, goldMax: type.goldMax,
 		aggressive: type.aggressive, aggroRadius: type.aggroRadius,
 		attackRange: type.attackRange, attackCooldown: type.attackCooldown,
 		speed: type.speed, baseY: type.baseY,
@@ -257,7 +257,7 @@ function spawnMonster( typeKey ) {
 }
 
 for ( i = 1; i <= 8; i++ ) {
-	spawnMonster( "poring" )
+	spawnMonster( "boar" )
 }
 for ( i = 1; i <= 4; i++ ) {
 	spawnMonster( "wolf" )
@@ -296,6 +296,18 @@ function handleAttack( playerId, targetId, isSkill ) {
 		return
 	}
 
+	// Only monsters in the player's front hemisphere are attackable — the
+	// same forward vector player.js's own movement code derives from
+	// rotationY (sin/cos of the Y-axis facing angle), dotted against the
+	// direction to the target. A negative dot product means the target is
+	// behind the player.
+	var forwardX = javaMath.sin( p.rotationY )
+	var forwardZ = javaMath.cos( p.rotationY )
+	var facingDot = ( forwardX * ( m.x - p.x ) ) + ( forwardZ * ( m.z - p.z ) )
+	if ( facingDot < 0 ) {
+		return
+	}
+
 	if ( isSkill ) {
 		p.skillReadyAt = now + SKILL_COOLDOWN
 	} else {
@@ -316,7 +328,7 @@ function handleAttack( playerId, targetId, isSkill ) {
 		m.targetPlayerId = ""
 
 		grantXp( playerId, m.xpReward )
-		p.zeny += m.zenyMin + int( rand() * ( m.zenyMax - m.zenyMin + 1 ) )
+		p.gold += m.goldMin + int( rand() * ( m.goldMax - m.goldMin + 1 ) )
 		sendStats( playerId )
 
 		if ( rand() < m.dropChance ) {

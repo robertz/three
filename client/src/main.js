@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { createWorld } from "./world.js";
 import { createPlayer, updatePlayer } from "./player.js";
-import { updateCamera } from "./camera.js";
-import { createMonsterRegistry, updateMonsterAnimations } from "./monsters.js";
+import { createCameraController, updateCamera } from "./camera.js";
+import { createMonsterRegistry, updateMonsterAnimations, updateMonsterPositions } from "./monsters.js";
 import { createCombat, updateCombat, useSkill, getTarget, SKILL_COOLDOWN } from "./combat.js";
 import { createHud } from "./hud.js";
 import { connectNetwork, updateNetwork } from "./network.js";
@@ -34,7 +34,7 @@ async function main() {
     xp: character.xp,
     xpToNext: character.xpToNext,
     attackDamage: character.attackDamage,
-    zeny: character.zeny,
+    gold: character.gold,
   });
   player.position.set(character.x, 0, character.z);
   player.rotation.y = character.rotationY;
@@ -61,6 +61,7 @@ async function main() {
     },
   });
   const combat = createCombat(camera, renderer.domElement, monsterRegistry);
+  const cameraController = createCameraController(renderer.domElement, player);
 
   const targetRing = new THREE.Mesh(
     new THREE.RingGeometry(0.7, 0.85, 24),
@@ -87,6 +88,7 @@ async function main() {
 
     player.mixer.update(delta);
     updateMonsterAnimations(monsterRegistry, delta);
+    updateMonsterPositions(monsterRegistry, delta);
 
     if (!dead) {
       updatePlayer(player, delta, world);
@@ -94,7 +96,7 @@ async function main() {
     }
 
     updateNetwork(network, player, delta);
-    updateCamera(camera, player);
+    updateCamera(camera, player, cameraController);
 
     const target = getTarget(combat, monsterRegistry);
     if (target) {

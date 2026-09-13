@@ -14,7 +14,7 @@ class {
 
 	function load( accountId ) {
 		var rows = queryExecute(
-			"SELECT x, z, rotation_y, level, hp, max_hp, xp, xp_to_next, attack_damage, zeny
+			"SELECT x, z, rotation_y, level, hp, max_hp, xp, xp_to_next, attack_damage, gold
 			 FROM characters WHERE account_id = :accountId",
 			{ accountId: arguments.accountId }
 		);
@@ -28,7 +28,7 @@ class {
 			xp: rows.xp[ 1 ],
 			xpToNext: rows.xp_to_next[ 1 ],
 			attackDamage: rows.attack_damage[ 1 ],
-			zeny: rows.zeny[ 1 ]
+			gold: rows.gold[ 1 ]
 		};
 	}
 
@@ -37,13 +37,13 @@ class {
 			"UPDATE characters SET
 				x = :x, z = :z, rotation_y = :rotationY, level = :level, hp = :hp,
 				max_hp = :maxHp, xp = :xp, xp_to_next = :xpToNext,
-				attack_damage = :attackDamage, zeny = :zeny
+				attack_damage = :attackDamage, gold = :gold
 			 WHERE account_id = :accountId",
 			{
 				x: arguments.state.x, z: arguments.state.z, rotationY: arguments.state.rotationY,
 				level: arguments.state.level, hp: arguments.state.hp, maxHp: arguments.state.maxHp,
 				xp: arguments.state.xp, xpToNext: arguments.state.xpToNext,
-				attackDamage: arguments.state.attackDamage, zeny: arguments.state.zeny,
+				attackDamage: arguments.state.attackDamage, gold: arguments.state.gold,
 				accountId: arguments.accountId
 			}
 		);

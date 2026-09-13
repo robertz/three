@@ -4,7 +4,6 @@ import { createCharacterMesh } from "./character.js";
 import { setAnimation } from "./models.js";
 
 const MOVE_SPEED = 8;
-const TURN_SPEED = 6;
 const PLAYER_RADIUS = 0.5;
 
 export function createPlayerMesh() {
@@ -22,22 +21,22 @@ export function createPlayer(scene) {
   group.xp = 0;
   group.xpToNext = 50;
   group.attackDamage = 10;
-  group.zeny = 0;
+  group.gold = 0;
 
   return group;
 }
 
 export function updatePlayer(player, delta, world) {
   const moveForward = (isDown("w") ? 1 : 0) - (isDown("s") ? 1 : 0);
-  const turn = (isDown("a") ? 1 : 0) - (isDown("d") ? 1 : 0);
-
-  player.rotation.y += turn * TURN_SPEED * delta;
+  const strafe = (isDown("a") ? 1 : 0) - (isDown("d") ? 1 : 0);
 
   let moved = false;
 
-  if (moveForward !== 0) {
+  if (moveForward !== 0 || strafe !== 0) {
     const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(player.quaternion);
-    const nextPos = player.position.clone().addScaledVector(forward, moveForward * MOVE_SPEED * delta);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(player.quaternion);
+    const move = forward.multiplyScalar(moveForward).addScaledVector(right, strafe).normalize();
+    const nextPos = player.position.clone().addScaledVector(move, MOVE_SPEED * delta);
 
     nextPos.x = THREE.MathUtils.clamp(nextPos.x, -world.bounds, world.bounds);
     nextPos.z = THREE.MathUtils.clamp(nextPos.z, -world.bounds, world.bounds);

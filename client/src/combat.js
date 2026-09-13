@@ -10,6 +10,8 @@ export function createCombat(camera, domElement, registry) {
   const state = { targetId: null, cooldown: 0, skillCooldown: 0 };
 
   domElement.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+
     pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
     pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
@@ -35,6 +37,12 @@ export function createCombat(camera, domElement, registry) {
   return state;
 }
 
+function isInFront(player, target) {
+  const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(player.quaternion);
+  const toTarget = new THREE.Vector3(target.x - player.position.x, 0, target.z - player.position.z);
+  return forward.dot(toTarget) >= 0;
+}
+
 export function getTarget(state, registry) {
   if (!state.targetId) return null;
   const entry = registry.get(state.targetId);
@@ -53,7 +61,7 @@ export function updateCombat(state, player, registry, network, delta) {
   if (!target || state.cooldown > 0) return;
 
   const dist = Math.hypot(player.position.x - target.x, player.position.z - target.z);
-  if (dist > ATTACK_RANGE) return;
+  if (dist > ATTACK_RANGE || !isInFront(player, target)) return;
 
   state.cooldown = ATTACK_COOLDOWN;
   network.sendAttack(state.targetId);
@@ -64,7 +72,7 @@ export function useSkill(state, player, registry, network) {
   if (!target || state.skillCooldown > 0) return;
 
   const dist = Math.hypot(player.position.x - target.x, player.position.z - target.z);
-  if (dist > ATTACK_RANGE) return;
+  if (dist > ATTACK_RANGE || !isInFront(player, target)) return;
 
   state.skillCooldown = SKILL_COOLDOWN;
   network.sendSkill(state.targetId);
