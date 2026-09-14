@@ -18,6 +18,7 @@ import { applyEquipmentVisual } from "./equipVisual.js";
 import { createNpcRegistry, updateNpcAnimations, getNearestNpc } from "./npc.js";
 import { createZoneBanner } from "./zone.js";
 import { loadModels } from "./models.js";
+import { terrainHeight } from "./terrain.js";
 
 const CLIENT_SHOP_RANGE = 4;
 
@@ -48,7 +49,7 @@ async function main() {
     attackDamage: character.attackDamage,
     gold: character.gold,
   });
-  player.position.set(character.x, 0, character.z);
+  player.position.set(character.x, terrainHeight(character.x, character.z), character.z);
   player.rotation.y = character.rotationY;
 
   const monsterRegistry = createMonsterRegistry();
@@ -154,7 +155,7 @@ async function main() {
     const target = getTarget(combat, monsterRegistry);
     if (target) {
       targetRing.visible = true;
-      targetRing.position.set(target.x, 0.05, target.z);
+      targetRing.position.set(target.x, terrainHeight(target.x, target.z) + 0.05, target.z);
     } else {
       targetRing.visible = false;
     }

@@ -3,6 +3,7 @@ import { isDown } from "./input.js";
 import { createCharacterMesh } from "./character.js";
 import { setAnimation } from "./models.js";
 import { nearbyObstacles } from "./world.js";
+import { terrainHeight } from "./terrain.js";
 
 const MOVE_SPEED = 8;
 const PLAYER_RADIUS = 0.5;
@@ -41,6 +42,7 @@ export function updatePlayer(player, delta, world) {
 
     nextPos.x = THREE.MathUtils.clamp(nextPos.x, -world.bounds, world.bounds);
     nextPos.z = THREE.MathUtils.clamp(nextPos.z, -world.bounds, world.bounds);
+    nextPos.y = terrainHeight(nextPos.x, nextPos.z);
 
     // Horizontal distance only — obstacle.position.y varies (the horizon
     // mountains are sunk well below ground to hide their flat base; see

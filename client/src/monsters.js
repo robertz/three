@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { cloneModel, setAnimation } from "./models.js";
 import { lerp, lerpAngle, smoothingFactor } from "./interpolate.js";
+import { terrainHeight } from "./terrain.js";
 
 // Every zone's two monster types (see server GameConfig.bx's _registerZone
 // calls) are reskins of the same two base models — no new art per zone,
@@ -133,7 +134,7 @@ export function applyMonsterSnapshot(scene, registry, list) {
       // back up via .parent until it finds this tag instead of assuming
       // one level of nesting.
       mesh.userData.monsterId = data.id;
-      mesh.position.set(data.x, BASE_Y[data.type] ?? 0, data.z);
+      mesh.position.set(data.x, terrainHeight(data.x, data.z) + (BASE_Y[data.type] ?? 0), data.z);
       mesh.rotation.y = data.rotationY;
       scene.add(mesh);
       entry = { mesh };
@@ -174,6 +175,7 @@ export function updateMonsterPositions(registry, delta) {
     if (!entry.target) continue;
     entry.mesh.position.x = lerp(entry.mesh.position.x, entry.target.x, t);
     entry.mesh.position.z = lerp(entry.mesh.position.z, entry.target.z, t);
+    entry.mesh.position.y = terrainHeight(entry.mesh.position.x, entry.mesh.position.z) + (BASE_Y[entry.data.type] ?? 0);
     entry.mesh.rotation.y = lerpAngle(entry.mesh.rotation.y, entry.target.rotationY, t);
   }
 }

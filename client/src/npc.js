@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { cloneModel, findAnimation } from "./models.js";
 import { CHARACTER_SCALE } from "./character.js";
+import { terrainHeight } from "./terrain.js";
 
 // NPCs are static (no AI, no movement) and deliberately kept in their own
 // registry, separate from monsters.js — combat.js's raycast targeting and
@@ -33,7 +34,7 @@ export function applyNpcSnapshot(scene, registry, list) {
 
     const mesh = createNpcMesh(data.model);
     mesh.userData.npcId = data.id;
-    mesh.position.set(data.x, 0, data.z);
+    mesh.position.set(data.x, terrainHeight(data.x, data.z), data.z);
     mesh.rotation.y = data.rotationY;
     scene.add(mesh);
     registry.set(data.id, { mesh, data });

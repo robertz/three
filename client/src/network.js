@@ -4,6 +4,7 @@ import { applyNpcSnapshot } from "./npc.js";
 import { applyWorldSnapshot, prepareZones } from "./world.js";
 import { setAnimation } from "./models.js";
 import { lerp, lerpAngle, smoothingFactor } from "./interpolate.js";
+import { terrainHeight } from "./terrain.js";
 
 const WS_URL = "ws://localhost:3001/game";
 const SEND_INTERVAL = 0.1;
@@ -145,7 +146,7 @@ export function connectNetwork(
         onKicked?.();
         break;
       case "respawn":
-        player.position.set(msg.x, 0, msg.z);
+        player.position.set(msg.x, terrainHeight(msg.x, msg.z), msg.z);
         player.rotation.y = msg.rotationY;
         onRespawn?.();
         break;
@@ -163,7 +164,7 @@ function addRemotePlayer(state, scene, data) {
   if (state.remotePlayers.has(data.id)) return;
 
   const mesh = createPlayerMesh();
-  mesh.position.set(data.x, 0, data.z);
+  mesh.position.set(data.x, terrainHeight(data.x, data.z), data.z);
   mesh.rotation.y = data.rotationY;
   mesh.target = { x: data.x, z: data.z, rotationY: data.rotationY };
   scene.add(mesh);
@@ -176,6 +177,7 @@ export function updateNetwork(state, player, delta) {
     remote.mixer.update(delta);
     remote.position.x = lerp(remote.position.x, remote.target.x, t);
     remote.position.z = lerp(remote.position.z, remote.target.z, t);
+    remote.position.y = terrainHeight(remote.position.x, remote.position.z);
     remote.rotation.y = lerpAngle(remote.rotation.y, remote.target.rotationY, t);
   }
 

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { cloneModel } from "./models.js";
+import { terrainHeight } from "./terrain.js";
 
 // Matches the server's GameConfig worldBounds (430) via WORLD_SIZE =
 // 2 * (worldBounds + 1) — see player.js, which clamps movement to
@@ -158,6 +159,17 @@ function createGround(textureLoader) {
   const colors = new Float32Array(geometry.attributes.position.count * 3).fill(1);
   geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
 
+  // Local X/Y is world X/Z here (same fact recolorGround's own comment
+  // relies on) — displacing local Z is what becomes world height once the
+  // -90° X rotation below is applied, giving the ground real walkable
+  // hills instead of a flat plane with only color variation.
+  const positions = geometry.attributes.position;
+  for (let i = 0; i < positions.count; i++) {
+    positions.setZ(i, terrainHeight(positions.getX(i), positions.getY(i)));
+  }
+  positions.needsUpdate = true;
+  geometry.computeVertexNormals();
+
   const ground = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ map: groundTexture, vertexColors: true }));
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
@@ -279,7 +291,7 @@ export function applyWorldSnapshot(scene, world, zones, mountains, props) {
     const height = box.max.y - box.min.y;
     const peakAboveGround = height * 0.3;
 
-    rock.position.set(m.x, peakAboveGround - box.max.y, m.z);
+    rock.position.set(m.x, terrainHeight(m.x, m.z) + peakAboveGround - box.max.y, m.z);
     scene.add(rock);
 
     // A circular collision footprint sized off the wider of the rock's
@@ -300,7 +312,7 @@ export function applyWorldSnapshot(scene, world, zones, mountains, props) {
     });
     prop.scale.setScalar(PROP_SCALE[p.type] ?? 2);
     prop.rotation.y = p.rotationY;
-    prop.position.set(p.x, 0, p.z);
+    prop.position.set(p.x, terrainHeight(p.x, p.z), p.z);
     scene.add(prop);
     const propObstacle = { position: prop.position, radius: PROP_RADIUS };
     world.obstacles.push(propObstacle);
