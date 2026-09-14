@@ -92,9 +92,9 @@ app.ws( "/game", ( connection ) => {
 		if ( data.type == "move" ) {
 			playerService.handleMove( playerId, data.x, data.z, data.rotationY )
 		} else if ( data.type == "attack" ) {
-			monsterService.handleAttack( playerId, data.targetId, false )
+			monsterService.handleAttack( playerId, data.targetId )
 		} else if ( data.type == "skill" ) {
-			monsterService.handleAttack( playerId, data.targetId, true )
+			monsterService.handleUseSkill( playerId, data.skillId, data.targetId )
 		} else if ( data.type == "useItem" ) {
 			playerService.handleUseItem( playerId, data.itemKey )
 		} else if ( data.type == "equipItem" ) {

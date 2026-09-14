@@ -35,6 +35,57 @@ const PROP_RADIUS = 1.2;
 
 const MOUNTAIN_TINT = 0x76899f;
 
+// player.js's collision check used to scan every obstacle (props + rock
+// footprints) every frame it moved — cheap when there were a few dozen,
+// wasteful now that the world has ~400. Bucketing by a uniform grid cell
+// lets that check look at only the handful of obstacles actually near the
+// query point instead of the whole list. Comfortably bigger than any prop
+// radius, but an obstacle is inserted into every cell its own circle
+// overlaps (not just the one containing its center), so a larger mountain
+// footprint spanning multiple cells still can't be missed by a single-cell
+// query at a point on its far edge.
+const OBSTACLE_CELL_SIZE = 20;
+// player.js's actual collision test is against `obstacle.radius +
+// PLAYER_RADIUS`, not just the obstacle's own radius — padding the
+// insertion bounds by the same amount here (duplicated rather than
+// imported, to avoid a circular import with player.js, which itself
+// imports nearbyObstacles from this file) keeps a query point that's
+// only inside that extra margin, in a cell the bare obstacle radius
+// wouldn't have reached, from missing the obstacle entirely.
+const COLLISION_MARGIN = 0.5;
+
+function obstacleCellKey(cx, cz) {
+  return `${cx},${cz}`;
+}
+
+function addToObstacleGrid(grid, obstacle) {
+  const { position, radius } = obstacle;
+  const paddedRadius = radius + COLLISION_MARGIN;
+  const minCx = Math.floor((position.x - paddedRadius) / OBSTACLE_CELL_SIZE);
+  const maxCx = Math.floor((position.x + paddedRadius) / OBSTACLE_CELL_SIZE);
+  const minCz = Math.floor((position.z - paddedRadius) / OBSTACLE_CELL_SIZE);
+  const maxCz = Math.floor((position.z + paddedRadius) / OBSTACLE_CELL_SIZE);
+
+  for (let cx = minCx; cx <= maxCx; cx++) {
+    for (let cz = minCz; cz <= maxCz; cz++) {
+      const key = obstacleCellKey(cx, cz);
+      let bucket = grid.get(key);
+      if (!bucket) {
+        bucket = [];
+        grid.set(key, bucket);
+      }
+      bucket.push(obstacle);
+    }
+  }
+}
+
+// player.js calls this with its candidate next position instead of
+// iterating world.obstacles directly.
+export function nearbyObstacles(world, x, z) {
+  const key = obstacleCellKey(Math.floor(x / OBSTACLE_CELL_SIZE), Math.floor(z / OBSTACLE_CELL_SIZE));
+  return world.obstacleGrid.get(key) ?? [];
+}
+
 // The ground itself only needs to be WORLD_SIZE across for the actual
 // playable area (obstacle scatter and the player's movement clamp — see
 // player.js — both key off WORLD_SIZE/world.bounds and are unrelated to
@@ -182,12 +233,13 @@ export function createWorld(scene) {
   scene.background = new THREE.Color(SKY_HORIZON_COLOR);
   scene.fog = new THREE.Fog(SKY_HORIZON_COLOR, 60, 260);
 
-  // obstacles starts empty and is filled in by applyWorldSnapshot() once the
-  // server's prop/mountain layout arrives — player.js holds this same array
-  // reference for its collision check, so pushing into it later is enough,
-  // no need to hand back a new object. ground is kept so applyWorldSnapshot
-  // can recolor it once zone data shows up.
-  return { bounds: WORLD_SIZE / 2 - 1, obstacles: [], ground };
+  // obstacles/obstacleGrid start empty and are filled in by
+  // applyWorldSnapshot() once the server's prop/mountain layout arrives —
+  // player.js holds this same object for its collision check (via
+  // nearbyObstacles()), so populating them later is enough, no need to
+  // hand back a new object. ground is kept so applyWorldSnapshot can
+  // recolor it once zone data shows up.
+  return { bounds: WORLD_SIZE / 2 - 1, obstacles: [], obstacleGrid: new Map(), ground };
 }
 
 // Renders the server-authoritative prop/mountain layout (see the "World
@@ -235,7 +287,9 @@ export function applyWorldSnapshot(scene, world, zones, mountains, props) {
     // but consistent with the simple circular collision every other
     // obstacle in this game already uses.
     const footprintRadius = Math.max(box.max.x - box.min.x, box.max.z - box.min.z) / 2;
-    world.obstacles.push({ position: rock.position, radius: footprintRadius });
+    const rockObstacle = { position: rock.position, radius: footprintRadius };
+    world.obstacles.push(rockObstacle);
+    addToObstacleGrid(world.obstacleGrid, rockObstacle);
   }
 
   for (const p of props) {
@@ -248,6 +302,8 @@ export function applyWorldSnapshot(scene, world, zones, mountains, props) {
     prop.rotation.y = p.rotationY;
     prop.position.set(p.x, 0, p.z);
     scene.add(prop);
-    world.obstacles.push({ position: prop.position, radius: PROP_RADIUS });
+    const propObstacle = { position: prop.position, radius: PROP_RADIUS };
+    world.obstacles.push(propObstacle);
+    addToObstacleGrid(world.obstacleGrid, propObstacle);
   }
 }

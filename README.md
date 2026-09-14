@@ -576,6 +576,145 @@ Two gaps the user flagged after Milestone 30: equipping gear was stat-only
   the existing buy coverage (out of range, not owned, succeeds). 56/56
   specs passing.
 
+Milestone 32 (done): server/client efficiency pass. The world had grown a
+lot (2 zones → 8, ~93 live monster instances, ~404 static collision
+obstacles) since anyone had checked whether the per-tick/per-frame hot
+paths still scaled — this was that audit.
+- `MonsterService.bx`'s `tickMonsterAI()` and `monsterSnapshot()` each ran
+  their own independent `nearestPlayerDistance()` scan over every monster
+  every tick to decide visibility — same computation done twice a tick.
+  `tickMonsterAI()` now computes it once per monster and caches
+  `m.visibleThisTick`; `monsterSnapshot()` just reads the flag.
+- `PlayerService.bx`'s `broadcastAll()`/`broadcastExcept()`/
+  `kickExistingConnection()` each opened with `structCopy(variables.players)`
+  purely to get a mutation-safe iteration order — replaced with
+  `structKeyArray(variables.players)`, same safety, without duplicating
+  every player's full live state on every single broadcast (chat, every
+  move relay, every attack's `monsterUpdate`, the once-a-tick monster
+  snapshot).
+- `client/src/network.js` sent a `move` message unconditionally every
+  100ms regardless of whether the player had actually moved — an idle
+  player (at a merchant, dead and waiting to respawn, reading chat) kept
+  pushing 10 messages/sec, each triggering a server-side broadcast to
+  everyone else. Now skipped when position/rotation are unchanged past a
+  small epsilon since the last send.
+- `client/src/player.js`'s collision check did a linear
+  `world.obstacles.some(...)` scan (a `Math.hypot` per entry) against the
+  full prop+mountain list every frame the player moved. `world.js` now
+  also buckets every obstacle into a uniform grid by cell (each obstacle
+  inserted into every cell its own collision circle overlaps, not just
+  the one containing its center, padded by the same margin the actual
+  collision check adds for the player's own radius — verified against a
+  100,000-trial randomized stress test comparing the grid's answer to a
+  brute-force scan, biased toward cell-boundary-straddling positions
+  specifically to exercise that margin); the collision check now only
+  looks at the query point's own cell instead of the full list.
+- `hud.js`'s per-frame HUD updates and `characterSheet.js`'s render (a
+  full panel innerHTML rebuild, gated behind whether the sheet is even
+  open, but not behind whether anything in it actually changed) now cache
+  last-rendered values and skip the DOM writes when nothing changed,
+  mirroring the pattern `inventory.js`'s `setCanSell()` already used.
+- Deliberately not done this pass (bigger changes, flagged rather than
+  silently skipped): per-connection-filtered monster broadcasts (today's
+  single global "visible to *someone*" snapshot means a player near the
+  Meadow also receives monster updates for a totally different player in
+  Dragon's Maw), and spatial-indexing `tickMonsterAI()`'s aggro/nearest-
+  player scan (still cheap at any realistic concurrent-player count).
+- Pure internal refactor of already-tested paths — no new specs needed;
+  the existing 56-spec suite is the regression check, still 56/56 passing.
+
+Milestone 33 (done): WoW-style action bar. Heroic Strike used to be a
+small icon tucked into the corner of the player HUD panel; usable items
+could only be consumed from inside the Inventory panel. Replaced with a
+proper bottom-center action bar (`client/src/actionBar.js`, 10 square
+slots, keys `1`–`9`/`0`) — not just a visual move, but a new mechanic:
+empty slots are drag-and-drop bindable to a usable inventory item for
+instant one-key use, like WoW's potion/food slots.
+- Slot 1 is permanently Heroic Strike (icon, cooldown overlay driven by
+  the same `combat.skillCooldown`/`SKILL_COOLDOWN` values the old corner
+  icon used — `hud.js`'s `.wow-skill-icon`/`updateSkill()` removed
+  entirely rather than showing the same cooldown twice).
+- Slots 2–9/0 bind to a usable item dragged off the Inventory panel
+  (`inventory.js`'s usable-item icons are now `draggable`); right-click
+  clears a binding. Bindings persist in `localStorage`
+  (`three-actionbar-slots`) as a snapshot of the item's own display data
+  (name/rarity/usable), not just its key — needed because a
+  consumed-to-zero item's row is deleted server-side
+  (`InventoryService.bx`), not kept at quantity 0, so the slot has
+  nowhere live to read an icon from once depleted. A depleted slot dims
+  and stops responding to click/keypress without losing its binding,
+  exactly like an empty WoW potion slot, and reactivates automatically
+  once the item count is back above zero.
+- No server changes — which item key a slot/keypress maps to is a
+  client-side convenience, not new game state; the existing
+  `useItem`/`skill` message types are unchanged.
+- Verified live end-to-end: dragged an Apple onto a slot, used it both by
+  click and by keypress (confirmed via the actual inventory count and the
+  slot's own quantity badge staying in sync), depleted it down to a
+  disabled-but-still-bound slot, right-click-cleared a binding, reloaded
+  and confirmed bindings survived, and confirmed typing in chat doesn't
+  fire any bar hotkey. Heroic Strike's click-to-cast was confirmed against
+  a live monster (HP dropped, cooldown started) — chasing down a couple
+  of flaky repeats of that same check surfaced nothing wrong with the bar
+  itself, just this session's already-known aggressive-monster-near-spawn
+  test hazard and a position-sync race specific to teleporting the player
+  via a debug hook faster than the client's own throttled position sync
+  could reach the server — neither is a real gameplay concern.
+
+Milestone 34 (done): additional abilities, level-gated. Heroic Strike was
+the only combat ability that existed — one shared cooldown, one shared
+2x multiplier, level-independent. Replaced with a real small ability
+system: 4 abilities with distinct mechanics, unlocking as the character
+levels, each with its own independent cooldown (no shared "GCD").
+
+| ability | level | cooldown | effect |
+|---|---|---|---|
+| Heroic Strike | 1 | 4s | single target, 2x damage (unchanged from before) |
+| Cleave | 5 | 6s | 1x damage to *every* alive monster in range + facing, not just the current target |
+| Execute | 12 | 8s | 4x damage, but rejected outright unless the target is ≤25% HP (matches real WoW's Execute) |
+| Rampage | 20 | 25s | self-buff, no target needed — +50% damage on attacks/skills for 8s |
+
+- `server/game/GameConfig.bx` gained a `skillTypes` table (same
+  struct-of-structs shape as `itemTypes`/`monsterTypes`) replacing the old
+  single `skillCooldown`/`skillMultiplier` constants.
+- `server/game/MonsterService.bx`'s `handleAttack()` lost its `isSkill`
+  parameter (it's always the plain 1x auto-attack now); a new
+  `handleUseSkill(playerId, skillId, targetId)` handles all four,
+  re-validating level/cooldown/range/facing/execute-threshold
+  server-side regardless of what the client already checked. The
+  on-kill reward block was extracted into a shared `_handleKill()` (no
+  `sendStats`/`persist` inside it) specifically so Cleave killing several
+  monsters in one cast sends one stats update and persists once, not
+  once per kill. Rampage's buff is read fresh at the point of damage
+  (`_buffMultiplier()`) rather than ever mutating `p.attackDamage`
+  itself — this exact codebase already hit a bug once this session where
+  a temporarily-overridden effective stat got silently clobbered by
+  `recomputeEffectiveStats()`; computing the buff on the fly sidesteps
+  that whole class of bug rather than re-risking it.
+- The action bar (`client/src/actionBar.js`) generalizes from "slot 1 is
+  the hardcoded skill" to "the first N slots are abilities, where N =
+  however many the player has unlocked at their current level" — a new
+  `client/src/abilities.js` mirrors the server's table for display only,
+  the server is always the actual authority. Slots past the unlocked
+  count keep working exactly as plain bindable item slots (unchanged
+  from last pass); a slot flips from item-bindable to ability-owned (or
+  back, if displayed at a lower level) live, immediately on a level
+  change, not just after the next full re-render.
+- Verified live end-to-end for all four abilities against real monsters
+  (not just the TestBox suite) — including confirming Execute is
+  rejected against a full-HP target and lands once brought below
+  threshold, Rampage needs no target/position at all and measurably
+  boosted a subsequent hit by exactly the buff multiplier, and that the
+  action bar's unlocked-slot count actually grows/shrinks with level
+  (bumped a test character's level directly in the DB — with its live
+  connection closed first, since an open connection's own periodic
+  autosave will otherwise silently overwrite a direct DB edit with its
+  stale in-memory value on its next save or on disconnect).
+- TestBox: `GameConfigSpec` gained a skill-table shape/order check;
+  `MonsterServiceSpec` gained six `handleUseSkill` cases (level gating,
+  each effect type including the execute-threshold rejection, and
+  independent per-skill cooldowns). 63/63 specs passing.
+
 Not yet wired up: matching the new fantasy theme in the chat/inventory
 panels and login/character-select-adjacent screens (login itself still uses
 the original plain styling), and re-selecting a character without

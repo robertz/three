@@ -9,6 +9,7 @@ const WS_URL = "ws://localhost:3001/game";
 const SEND_INTERVAL = 0.1;
 const POSITION_SMOOTHING = 10;
 const WALK_THRESHOLD = 0.01;
+const MOVE_EPSILON = 0.01;
 
 export function connectNetwork(
   scene,
@@ -23,14 +24,17 @@ export function connectNetwork(
     ws: null,
     remotePlayers: new Map(),
     sendTimer: 0,
+    lastSentX: NaN,
+    lastSentZ: NaN,
+    lastSentRotationY: NaN,
     sendAttack(targetId) {
       if (state.ws.readyState === WebSocket.OPEN) {
         state.ws.send(JSON.stringify({ type: "attack", targetId }));
       }
     },
-    sendSkill(targetId) {
+    sendSkill(skillId, targetId) {
       if (state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({ type: "skill", targetId }));
+        state.ws.send(JSON.stringify({ type: "skill", skillId, targetId }));
       }
     },
     sendChat(text) {
@@ -179,5 +183,21 @@ export function updateNetwork(state, player, delta) {
   if (state.sendTimer > 0 || state.ws.readyState !== WebSocket.OPEN) return;
 
   state.sendTimer = SEND_INTERVAL;
-  state.ws.send(JSON.stringify({ type: "move", x: player.position.x, z: player.position.z, rotationY: player.rotation.y }));
+
+  const { x, z } = player.position;
+  const rotationY = player.rotation.y;
+  // Skip the send (and the server's broadcastExcept relay to every other
+  // player) when nothing's actually changed since last time — an idle
+  // player standing at a merchant or dead and waiting to respawn used to
+  // still push 10 identical "move" messages a second.
+  const unchanged =
+    Math.abs(x - state.lastSentX) < MOVE_EPSILON &&
+    Math.abs(z - state.lastSentZ) < MOVE_EPSILON &&
+    Math.abs(rotationY - state.lastSentRotationY) < MOVE_EPSILON;
+  if (unchanged) return;
+
+  state.lastSentX = x;
+  state.lastSentZ = z;
+  state.lastSentRotationY = rotationY;
+  state.ws.send(JSON.stringify({ type: "move", x, z, rotationY }));
 }

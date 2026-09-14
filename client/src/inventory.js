@@ -36,7 +36,7 @@ export function createInventory(sendUseItem, sendEquipItem, sendSellItem) {
 
         return `
         <div class="wow-item-row" data-index="${i}">
-          <div class="wow-slot-icon" style="border-color:${rarityColor(item.rarity)};">${iconFor(item)}</div>
+          <div class="wow-slot-icon" ${item.usable ? 'draggable="true"' : ""} style="border-color:${rarityColor(item.rarity)};${item.usable ? "cursor:grab;" : ""}" title="${item.usable ? "Drag onto the action bar to bind" : ""}">${iconFor(item)}</div>
           <div style="flex:1;min-width:0;">
             <div style="color:${rarityColor(item.rarity)};font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${item.name}${item.quantity > 1 ? ` <span style="color:#8a7a58;">x${item.quantity}</span>` : ""}</div>
           </div>
@@ -55,6 +55,14 @@ export function createInventory(sendUseItem, sendEquipItem, sendSellItem) {
         if (action === "use") sendUseItem(item.key);
         if (action === "equip") sendEquipItem(item.key);
         if (action === "sell") sendSellItem(item.key);
+      });
+    });
+
+    panel.querySelectorAll('.wow-slot-icon[draggable="true"]').forEach((el) => {
+      const row = el.closest("[data-index]");
+      const item = items[Number(row.dataset.index)];
+      el.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", item.key);
       });
     });
   }

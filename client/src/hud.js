@@ -70,7 +70,6 @@ export function injectStyles() {
     .wow-hp-fill { background: linear-gradient(180deg, #e06868 0%, #7a1f1f 100%); }
     .wow-xp-fill { background: linear-gradient(180deg, #f5d76e 0%, #a8790f 100%); }
     .wow-target-hp-fill { background: linear-gradient(180deg, #e06868 0%, #7a1f1f 100%); }
-    .wow-skill-fill { background: linear-gradient(180deg, #f0a94e 0%, #a85f12 100%); }
 
     .wow-bar-label {
       position: absolute;
@@ -82,34 +81,6 @@ export function injectStyles() {
       color: #fff;
       text-shadow: 0 1px 2px #000, 0 0 3px #000;
       letter-spacing: 0.5px;
-    }
-
-    .wow-skill-icon {
-      position: relative;
-      width: 36px;
-      height: 36px;
-      border-radius: 5px;
-      background: radial-gradient(circle at 35% 30%, #6b3a1a, #2a1608 75%);
-      border: 2px solid ${GOLD};
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 17px;
-      flex-shrink: 0;
-    }
-
-    .wow-skill-key {
-      position: absolute;
-      bottom: -3px;
-      right: -3px;
-      background: #14100a;
-      border: 1px solid ${GOLD};
-      color: ${GOLD};
-      font-size: 9px;
-      font-weight: 700;
-      border-radius: 3px;
-      padding: 0 3px;
-      line-height: 12px;
     }
 
     .wow-gold-coin {
@@ -184,6 +155,56 @@ export function injectStyles() {
     .wow-action-btn:hover { background: rgba(255,255,255,0.12); }
     .wow-action-btn.disabled { cursor: default; opacity: 0.4; border-color: #555; }
     .wow-action-btn.disabled:hover { background: none; }
+
+    /* The action bar's own slot tile — bigger than .wow-slot-icon since
+       it's a primary always-visible HUD element, not a list-row icon. */
+    .wow-action-slot {
+      position: relative;
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      background: radial-gradient(circle at 35% 30%, #3a2c18, #14100a 80%);
+      border: 2px solid #6b5a3a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      cursor: pointer;
+      overflow: hidden;
+      user-select: none;
+    }
+    .wow-action-slot.empty { opacity: 0.45; border-style: dashed; cursor: default; }
+    .wow-action-slot.disabled { opacity: 0.35; cursor: default; }
+    .wow-action-slot.drag-over { border-color: ${GOLD}; box-shadow: 0 0 8px rgba(212,175,55,0.7); }
+
+    .wow-action-slot-key {
+      position: absolute;
+      top: 1px;
+      left: 2px;
+      font-size: 8px;
+      font-weight: 700;
+      color: ${GOLD};
+      text-shadow: 0 1px 2px #000;
+      pointer-events: none;
+    }
+    .wow-action-slot-qty {
+      position: absolute;
+      bottom: 0;
+      right: 2px;
+      font-size: 9px;
+      font-weight: 700;
+      color: #f0e6c8;
+      text-shadow: 0 1px 2px #000;
+      pointer-events: none;
+    }
+    .wow-action-slot-cooldown {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.75);
+      pointer-events: none;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -214,17 +235,8 @@ export function createHud() {
         </div>
       </div>
     </div>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;">
+    <div style="margin-top:10px;">
       <div id="hud-gold" style="font-size:12px;color:${GOLD};"></div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <div class="wow-bar-track" style="height:6px;width:70px;">
-          <div class="wow-bar-fill wow-skill-fill" id="hud-skill-bar" style="width:100%;"></div>
-        </div>
-        <div class="wow-skill-icon">
-          ⚔
-          <div class="wow-skill-key">1</div>
-        </div>
-      </div>
     </div>
   `;
   container.appendChild(playerPanel);
@@ -264,30 +276,56 @@ export function createHud() {
   const hpTextEl = playerPanel.querySelector("#hud-hp-text");
   const xpBarEl = playerPanel.querySelector("#hud-xp-bar");
   const goldEl = playerPanel.querySelector("#hud-gold");
-  const skillBarEl = playerPanel.querySelector("#hud-skill-bar");
   const targetNameEl = targetPanel.querySelector("#hud-target-name");
   const targetHpBarEl = targetPanel.querySelector("#hud-target-hp-bar");
 
+  // Called every animation frame from main.js's tick() regardless of
+  // whether anything actually changed since the last one — these caches
+  // let each updater skip its DOM writes (textContent/style.width, and
+  // goldEl's own innerHTML reparse) when the values it would write are
+  // identical to last time, the same "no-op if unchanged" idea
+  // inventory.js's setCanSell() already uses.
+  let lastLevel, lastHp, lastMaxHp, lastXp, lastXpToNext, lastGold;
+  let lastTargetId, lastTargetHp, lastTargetMaxHp;
+
   return {
     updatePlayer(player) {
-      levelEl.textContent = player.level;
-      hpBarEl.style.width = `${Math.max(0, (player.hp / player.maxHp) * 100)}%`;
-      hpTextEl.textContent = `${Math.max(0, Math.round(player.hp))} / ${player.maxHp}`;
-      xpBarEl.style.width = `${(player.xp / player.xpToNext) * 100}%`;
-      goldEl.innerHTML = `<span class="wow-gold-coin"></span>${player.gold}`;
+      if (player.level !== lastLevel) {
+        levelEl.textContent = player.level;
+        lastLevel = player.level;
+      }
+      if (player.hp !== lastHp || player.maxHp !== lastMaxHp) {
+        hpBarEl.style.width = `${Math.max(0, (player.hp / player.maxHp) * 100)}%`;
+        hpTextEl.textContent = `${Math.max(0, Math.round(player.hp))} / ${player.maxHp}`;
+        lastHp = player.hp;
+        lastMaxHp = player.maxHp;
+      }
+      if (player.xp !== lastXp || player.xpToNext !== lastXpToNext) {
+        xpBarEl.style.width = `${(player.xp / player.xpToNext) * 100}%`;
+        lastXp = player.xp;
+        lastXpToNext = player.xpToNext;
+      }
+      if (player.gold !== lastGold) {
+        goldEl.innerHTML = `<span class="wow-gold-coin"></span>${player.gold}`;
+        lastGold = player.gold;
+      }
     },
     updateTarget(target) {
       if (!target || !target.alive) {
-        targetPanel.style.display = "none";
+        if (lastTargetId !== null) {
+          targetPanel.style.display = "none";
+          lastTargetId = null;
+        }
         return;
       }
+      if (target.id === lastTargetId && target.hp === lastTargetHp && target.maxHp === lastTargetMaxHp) return;
+
       targetPanel.style.display = "block";
       targetNameEl.textContent = `${target.name}  Lv.${target.level}  ${Math.max(0, Math.round(target.hp))}/${target.maxHp}`;
       targetHpBarEl.style.width = `${Math.max(0, (target.hp / target.maxHp) * 100)}%`;
-    },
-    updateSkill(cooldownRemaining, cooldownTotal) {
-      const ready = Math.max(0, 1 - cooldownRemaining / cooldownTotal);
-      skillBarEl.style.width = `${ready * 100}%`;
+      lastTargetId = target.id;
+      lastTargetHp = target.hp;
+      lastTargetMaxHp = target.maxHp;
     },
     setDead(isDead) {
       deathPanel.style.display = isDead ? "flex" : "none";

@@ -13,6 +13,14 @@ export function createCharacterSheet() {
 
   let player = null;
   let slots = SLOT_ORDER.map((slot) => ({ slot, key: "", name: "" }));
+  // update() is called every animation frame regardless of whether
+  // anything actually changed — unlike the always-visible HUD, render()
+  // here is a full innerHTML rebuild (reparse + event listeners N/A, but
+  // still real DOM churn), so it's worth a signature check rather than
+  // the cheaper per-field guards hud.js uses. player is the same mutated
+  // object every call (main.js never reassigns it), so this has to
+  // compare values, not just the reference.
+  let lastRenderSignature = null;
 
   const panel = document.createElement("div");
   panel.className = "wow-hud wow-panel";
@@ -27,8 +35,22 @@ export function createCharacterSheet() {
       </div>`;
   }
 
+  function renderSignature() {
+    return [
+      player.name,
+      player.level,
+      player.xp,
+      player.xpToNext,
+      player.attackDamage,
+      player.maxHp,
+      player.gold,
+      ...slots.map((s) => `${s.slot}:${s.key}:${s.rarity ?? ""}`),
+    ].join("|");
+  }
+
   function render() {
     if (!player) return;
+    lastRenderSignature = renderSignature();
 
     const gear = SLOT_ORDER.map((slotKey) => {
       const entry = slots.find((s) => s.slot === slotKey) ?? { key: "" };
@@ -78,14 +100,20 @@ export function createCharacterSheet() {
     }
   });
 
+  function renderIfChanged() {
+    if (panel.style.display === "none" || !player) return;
+    if (renderSignature() === lastRenderSignature) return;
+    render();
+  }
+
   return {
     update(newPlayer) {
       player = newPlayer;
-      if (panel.style.display !== "none") render();
+      renderIfChanged();
     },
     setEquipment(newSlots) {
       slots = newSlots;
-      if (panel.style.display !== "none") render();
+      renderIfChanged();
     },
   };
 }

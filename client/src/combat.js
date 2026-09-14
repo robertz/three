@@ -1,13 +1,13 @@
 import * as THREE from "three";
+import { ABILITIES } from "./abilities.js";
 
 const ATTACK_RANGE = 3;
 const ATTACK_COOLDOWN = 1;
-export const SKILL_COOLDOWN = 4;
 
 export function createCombat(camera, domElement, registry) {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
-  const state = { targetId: null, cooldown: 0, skillCooldown: 0 };
+  const state = { targetId: null, cooldown: 0, skillCooldowns: {} };
 
   domElement.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
@@ -71,7 +71,9 @@ export function getTarget(state, registry) {
 
 export function updateCombat(state, player, registry, network, delta) {
   state.cooldown -= delta;
-  state.skillCooldown -= delta;
+  for (const id in state.skillCooldowns) {
+    state.skillCooldowns[id] = Math.max(0, state.skillCooldowns[id] - delta);
+  }
 
   const target = getTarget(state, registry);
   if (!target || state.cooldown > 0) return;
@@ -83,13 +85,21 @@ export function updateCombat(state, player, registry, network, delta) {
   network.sendAttack(state.targetId);
 }
 
-export function useSkill(state, player, registry, network) {
-  const target = getTarget(state, registry);
-  if (!target || state.skillCooldown > 0) return;
+export function useSkill(state, player, registry, network, skillId) {
+  const ability = ABILITIES.find((a) => a.id === skillId);
+  if (!ability) return;
+  if ((state.skillCooldowns[skillId] ?? 0) > 0) return;
 
-  const dist = Math.hypot(player.position.x - target.x, player.position.z - target.z);
-  if (dist > ATTACK_RANGE || !isInFront(player, target)) return;
+  if (ability.requiresTarget) {
+    const target = getTarget(state, registry);
+    if (!target) return;
 
-  state.skillCooldown = SKILL_COOLDOWN;
-  network.sendSkill(state.targetId);
+    const dist = Math.hypot(player.position.x - target.x, player.position.z - target.z);
+    if (dist > ATTACK_RANGE || !isInFront(player, target)) return;
+
+    if (ability.effect === "execute" && target.hp > target.maxHp * ability.executeThreshold) return;
+  }
+
+  state.skillCooldowns[skillId] = ability.cooldown;
+  network.sendSkill(skillId, state.targetId);
 }

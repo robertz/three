@@ -75,7 +75,7 @@ class extends="testbox.system.BaseSpec" {
 				p.rotationY = 0
 				var hpBefore = m.hp
 
-				variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+				variables.monsterService.handleAttack( variables.playerId, monsterId )
 
 				expect( m.hp ).toBeLT( hpBefore )
 			} )
@@ -91,7 +91,7 @@ class extends="testbox.system.BaseSpec" {
 				p.rotationY = 0
 				var hpBefore = m.hp
 
-				variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+				variables.monsterService.handleAttack( variables.playerId, monsterId )
 
 				expect( m.hp ).toBe( hpBefore )
 			} )
@@ -107,7 +107,7 @@ class extends="testbox.system.BaseSpec" {
 				p.rotationY = 0
 				var hpBefore = m.hp
 
-				variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+				variables.monsterService.handleAttack( variables.playerId, monsterId )
 
 				expect( m.hp ).toBe( hpBefore )
 			} )
@@ -122,9 +122,9 @@ class extends="testbox.system.BaseSpec" {
 				p.z = m.z - 1
 				p.rotationY = 0
 
-				variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+				variables.monsterService.handleAttack( variables.playerId, monsterId )
 				var hpAfterFirst = m.hp
-				variables.monsterService.handleAttack( variables.playerId, monsterId, false ) // still on cooldown
+				variables.monsterService.handleAttack( variables.playerId, monsterId ) // still on cooldown
 
 				expect( m.hp ).toBe( hpAfterFirst )
 			} )
@@ -145,7 +145,7 @@ class extends="testbox.system.BaseSpec" {
 				// cooldown between them since this test is about the kill outcome,
 				// not cooldown pacing (that's covered separately above).
 				for ( var i = 1; i <= 3; i++ ) {
-					variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+					variables.monsterService.handleAttack( variables.playerId, monsterId )
 					p.attackReadyAt = 0
 				}
 
@@ -154,6 +154,140 @@ class extends="testbox.system.BaseSpec" {
 				expect( m.respawnAt ).toBeGT( 0 )
 				expect( p.xp ).toBeGT( xpBefore )
 				expect( p.gold ).toBeGT( goldBefore )
+			} )
+
+			it( "handleUseSkill rejects a skill the caster's level is too low for", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.x = m.x
+				p.z = m.z - 1
+				p.rotationY = 0
+				var hpBefore = m.hp
+
+				// A fresh character is level 1 — cleave requires level 5.
+				variables.monsterService.handleUseSkill( variables.playerId, "cleave", monsterId )
+
+				expect( m.hp ).toBe( hpBefore )
+			} )
+
+			it( "handleUseSkill heroicStrike deals double the caster's attack damage", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.x = m.x
+				p.z = m.z - 1
+				p.rotationY = 0
+				var hpBefore = m.hp
+				var atk = p.attackDamage
+
+				variables.monsterService.handleUseSkill( variables.playerId, "heroicStrike", monsterId )
+
+				expect( m.hp ).toBe( hpBefore - ( atk * 2 ) )
+			} )
+
+			it( "handleUseSkill cleave damages every alive monster in range and facing, leaving one behind the caster untouched", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				// Fresh MonsterService per test (see beforeEach) — ids are
+				// deterministic (m1/m2/m3) rather than relying on
+				// structKeyList()'s enumeration order for three entries.
+				var inRange1 = monsters[ "m1" ]
+				var inRange2 = monsters[ "m2" ]
+				var behind = monsters[ "m3" ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.level = 5
+				p.x = 0
+				p.z = 0
+				p.rotationY = 0 // forward is +z
+
+				inRange1.x = 0
+				inRange1.z = 1
+				inRange2.x = 0.5
+				inRange2.z = 1.5
+				behind.x = 0
+				behind.z = -5
+
+				var hpBefore1 = inRange1.hp
+				var hpBefore2 = inRange2.hp
+				var hpBeforeBehind = behind.hp
+
+				variables.monsterService.handleUseSkill( variables.playerId, "cleave", "" )
+
+				expect( inRange1.hp ).toBeLT( hpBefore1 )
+				expect( inRange2.hp ).toBeLT( hpBefore2 )
+				expect( behind.hp ).toBe( hpBeforeBehind )
+			} )
+
+			it( "handleUseSkill execute is rejected above the hp threshold and kills a low-hp target for 4x damage", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.level = 12
+				p.x = m.x
+				p.z = m.z - 1
+				p.rotationY = 0
+
+				// boar hp=30, well above execute's 25% threshold (7.5) at full
+				// health — rejected outright, no damage, no cooldown consumed.
+				variables.monsterService.handleUseSkill( variables.playerId, "execute", monsterId )
+				expect( m.hp ).toBe( 30 )
+				expect( p.skillCooldowns[ "execute" ] ?: 0 ).toBe( 0 )
+
+				m.hp = 5 // below the 25% threshold
+				variables.monsterService.handleUseSkill( variables.playerId, "execute", monsterId )
+				expect( m.hp ).toBe( 0 )
+				expect( m.alive ).toBeFalse()
+			} )
+
+			it( "handleUseSkill rampage needs no target and boosts a subsequent attack's damage", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.level = 20
+				p.x = m.x
+				p.z = m.z - 1
+				p.rotationY = 0
+				var atk = p.attackDamage
+
+				variables.monsterService.handleUseSkill( variables.playerId, "rampage", "" )
+				var hpBeforeHit = m.hp
+				variables.monsterService.handleAttack( variables.playerId, monsterId )
+
+				expect( hpBeforeHit - m.hp ).toBe( atk * 1.5 )
+			} )
+
+			it( "each skill's cooldown is independent — using one doesn't block a different one", function() {
+				variables.monsterService.spawnMonster( "boar", variables.gameConfig.getZones()[ 1 ] )
+				var monsters = variables.monsterService.getMonsters()
+				var monsterId = structKeyList( monsters )
+				var m = monsters[ monsterId ]
+				var p = variables.playerService.getPlayers()[ variables.playerId ]
+				p.level = 5
+				p.x = m.x
+				p.z = m.z - 1
+				p.rotationY = 0
+
+				variables.monsterService.handleUseSkill( variables.playerId, "heroicStrike", monsterId )
+				var hpAfterFirst = m.hp
+
+				// Still on its own cooldown — a second immediate cast no-ops.
+				variables.monsterService.handleUseSkill( variables.playerId, "heroicStrike", monsterId )
+				expect( m.hp ).toBe( hpAfterFirst )
+
+				// A different skill has its own independent cooldown, unaffected.
+				variables.monsterService.handleUseSkill( variables.playerId, "cleave", monsterId )
+				expect( m.hp ).toBeLT( hpAfterFirst )
 			} )
 
 			it( "kills of Highlands monsters eventually yield a rare item, independent of the common-item roll", function() {
@@ -183,7 +317,7 @@ class extends="testbox.system.BaseSpec" {
 					m.alive = true
 					m.hp = m.maxHp
 					p.attackReadyAt = 0
-					variables.monsterService.handleAttack( variables.playerId, monsterId, false )
+					variables.monsterService.handleAttack( variables.playerId, monsterId )
 				}
 
 				var gotRare = variables.inventoryService.hasItem( variables.characterId, "steelSword" )

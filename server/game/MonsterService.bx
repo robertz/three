@@ -51,25 +51,28 @@ class {
 			homeX: home.x, homeZ: home.z,
 			wanderTargetX: home.x, wanderTargetZ: home.z, wanderTimer: 0,
 			attackTimer: 0, state: "wander", targetPlayerId: "",
-			alive: true, respawnAt: 0
+			alive: true, respawnAt: 0,
+			// Assume visible until the next tickMonsterAI() run actually
+			// checks — lets a snapshot taken right after spawning (e.g. the
+			// welcome payload for a player connecting mid-tick) still include
+			// it instead of waiting on a tick that hasn't happened yet.
+			visibleThisTick: true
 		}
 	}
 
-	// players is optional (defaults to every live player) purely so the
-	// specs can call this with no arguments — production call sites (the
-	// tick broadcast, and the welcome payload for a newly connecting
-	// player) always pass the live players struct, filtering the wire
-	// snapshot down to whatever's within getMonsterVisibilityRadius() of
-	// at least one of them. A monster nobody's near just isn't in the
-	// list — the client's applyMonsterSnapshot() already treats "not in
-	// the latest snapshot" as "remove it", so this doubles as the culling
-	// tickMonsterAI() below does for processing.
-	function monsterSnapshot( players = variables.playerService.getPlayers() ) {
+	// Filters on the visibleThisTick flag tickMonsterAI() computes once per
+	// monster per tick (within getMonsterVisibilityRadius() of at least one
+	// player) rather than recomputing nearestPlayerDistance() itself here —
+	// the two used to do the exact same distance scan independently on every
+	// tick. A monster nobody's near just isn't in the list — the client's
+	// applyMonsterSnapshot() already treats "not in the latest snapshot" as
+	// "remove it", so this doubles as the culling tickMonsterAI() does for
+	// processing.
+	function monsterSnapshot() {
 		var list = []
-		var visRadius = variables.gameConfig.getMonsterVisibilityRadius()
 		for ( var id in variables.monsters ) {
 			var m = variables.monsters[ id ]
-			if ( nearestPlayerDistance( m, players ) > visRadius ) {
+			if ( !( m.visibleThisTick ?: true ) ) {
 				continue
 			}
 			list.append( { id: id, type: m.type, level: m.level, x: m.x, z: m.z, rotationY: m.rotationY, hp: m.hp, maxHp: m.maxHp, alive: m.alive } )
@@ -92,7 +95,66 @@ class {
 		return nearest
 	}
 
-	function handleAttack( playerId, targetId, isSkill ) {
+	// Distance + facing check shared by the plain attack and every targeted
+	// skill — same math the old handleAttack always had, just named so it
+	// isn't copy-pasted a third time for handleUseSkill's singleTarget/
+	// execute/cleave branches.
+	private function _inRangeAndFacing( p, m ) {
+		var dist = variables.javaMath.sqrt( ( ( p.x - m.x ) * ( p.x - m.x ) ) + ( ( p.z - m.z ) * ( p.z - m.z ) ) )
+		if ( dist > variables.gameConfig.getAttackRange() ) {
+			return false
+		}
+
+		// Only monsters in the player's front hemisphere are attackable — the
+		// same forward vector player.js's own movement code derives from
+		// rotationY (sin/cos of the Y-axis facing angle), dotted against the
+		// direction to the target. A negative dot product means the target is
+		// behind the player.
+		var forwardX = variables.javaMath.sin( p.rotationY )
+		var forwardZ = variables.javaMath.cos( p.rotationY )
+		var facingDot = ( forwardX * ( m.x - p.x ) ) + ( forwardZ * ( m.z - p.z ) )
+		return facingDot >= 0
+	}
+
+	// Read fresh at the point of damage rather than ever baked into
+	// p.attackDamage — recomputeEffectiveStats() (called from grantXp() on
+	// every kill) would silently clobber a mutated stat, the exact bug this
+	// session already hit once with a test's stat override. Computing the
+	// buff on the fly here instead of mutating a stored stat sidesteps that
+	// whole class of bug.
+	private function _buffMultiplier( p ) {
+		if ( ( p.damageBuffExpiresAt ?: 0 ) > ( getTickCount() / 1000 ) ) {
+			return p.damageBuffMultiplier ?: 1
+		}
+		return 1
+	}
+
+	// Marks a monster dead and grants its reward — does NOT sendStats()/
+	// persist(), since a single cast (Cleave) can kill more than one
+	// monster and the caller wants exactly one stats push/persist for the
+	// whole cast, not one per kill.
+	private function _handleKill( playerId, m ) {
+		var now = getTickCount() / 1000
+		m.hp = 0
+		m.alive = false
+		var baseDelay = variables.gameConfig.getMonsterTypes()[ m.type ].respawnDelay
+		m.respawnAt = now + ( baseDelay * ( 0.85 + ( rand() * 0.3 ) ) )
+		m.state = "wander"
+		m.targetPlayerId = ""
+
+		variables.playerService.grantXp( playerId, m.xpReward )
+		variables.playerService.addGold( playerId, m.goldMin + int( rand() * ( m.goldMax - m.goldMin + 1 ) ) )
+
+		// Each possible drop is rolled independently — a kill can grant
+		// zero, one, or (rarely) several of a monster's possible items.
+		for ( var drop in m.drops ) {
+			if ( rand() < drop.chance ) {
+				variables.playerService.dropItem( playerId, drop.item )
+			}
+		}
+	}
+
+	function handleAttack( playerId, targetId ) {
 		var players = variables.playerService.getPlayers()
 		var p = players[ playerId ]
 		if ( p.respawning ?: false ) {
@@ -107,60 +169,114 @@ class {
 		}
 
 		var now = getTickCount() / 1000
-		var readyAt = isSkill ? ( p.skillReadyAt ?: 0 ) : ( p.attackReadyAt ?: 0 )
-		if ( now < readyAt ) {
+		if ( now < ( p.attackReadyAt ?: 0 ) ) {
+			return
+		}
+		if ( !_inRangeAndFacing( p, m ) ) {
 			return
 		}
 
-		var dist = variables.javaMath.sqrt( ( ( p.x - m.x ) * ( p.x - m.x ) ) + ( ( p.z - m.z ) * ( p.z - m.z ) ) )
-		if ( dist > variables.gameConfig.getAttackRange() ) {
-			return
-		}
+		p.attackReadyAt = now + variables.gameConfig.getAttackCooldown()
 
-		// Only monsters in the player's front hemisphere are attackable — the
-		// same forward vector player.js's own movement code derives from
-		// rotationY (sin/cos of the Y-axis facing angle), dotted against the
-		// direction to the target. A negative dot product means the target is
-		// behind the player.
-		var forwardX = variables.javaMath.sin( p.rotationY )
-		var forwardZ = variables.javaMath.cos( p.rotationY )
-		var facingDot = ( forwardX * ( m.x - p.x ) ) + ( forwardZ * ( m.z - p.z ) )
-		if ( facingDot < 0 ) {
-			return
-		}
-
-		if ( isSkill ) {
-			p.skillReadyAt = now + variables.gameConfig.getSkillCooldown()
-		} else {
-			p.attackReadyAt = now + variables.gameConfig.getAttackCooldown()
-		}
-
-		m.hp -= p.attackDamage * ( isSkill ? variables.gameConfig.getSkillMultiplier() : 1 )
+		m.hp -= p.attackDamage * _buffMultiplier( p )
 		if ( m.aggressive ) {
 			m.state = "chase"
 			m.targetPlayerId = playerId
 		}
 
 		if ( m.hp <= 0 ) {
-			m.hp = 0
-			m.alive = false
-			var baseDelay = variables.gameConfig.getMonsterTypes()[ m.type ].respawnDelay
-			m.respawnAt = now + ( baseDelay * ( 0.85 + ( rand() * 0.3 ) ) )
-			m.state = "wander"
-			m.targetPlayerId = ""
-
-			variables.playerService.grantXp( playerId, m.xpReward )
-			variables.playerService.addGold( playerId, m.goldMin + int( rand() * ( m.goldMax - m.goldMin + 1 ) ) )
+			_handleKill( playerId, m )
 			variables.playerService.sendStats( playerId )
+			variables.playerService.persist( playerId )
+		}
 
-			// Each possible drop is rolled independently — a kill can grant
-			// zero, one, or (rarely) several of a monster's possible items.
-			for ( var drop in m.drops ) {
-				if ( rand() < drop.chance ) {
-					variables.playerService.dropItem( playerId, drop.item )
+		variables.playerService.broadcastAll( { type: "monsterUpdate", id: targetId, hp: m.hp, alive: m.alive } )
+	}
+
+	// Every ability funnels through here. Level/cooldown are re-validated
+	// server-side regardless of what the client already checked — the
+	// client's copy of the skill table (client/src/abilities.js) is for
+	// display/prediction only, never the authority.
+	function handleUseSkill( playerId, skillId, targetId ) {
+		var players = variables.playerService.getPlayers()
+		var p = players[ playerId ]
+		if ( p.respawning ?: false ) {
+			return
+		}
+		var skillTypes = variables.gameConfig.getSkillTypes()
+		if ( !structKeyExists( skillTypes, skillId ) ) {
+			return
+		}
+		var skill = skillTypes[ skillId ]
+		if ( p.level < skill.levelRequired ) {
+			return
+		}
+
+		var now = getTickCount() / 1000
+		if ( now < ( p.skillCooldowns[ skillId ] ?: 0 ) ) {
+			return
+		}
+
+		// Self-buffs need no target/range/facing check at all — matches how
+		// real self-buffs work.
+		if ( skill.effect == "selfBuff" ) {
+			p.damageBuffMultiplier = skill.buffMultiplier
+			p.damageBuffExpiresAt = now + skill.buffDuration
+			p.skillCooldowns[ skillId ] = now + skill.cooldown
+			return
+		}
+
+		// Cleave ignores targetId entirely — it swings at everything in
+		// range and in front, not just whatever's currently selected.
+		if ( skill.effect == "cleave" ) {
+			var killedAny = false
+			for ( var mid in variables.monsters ) {
+				var cm = variables.monsters[ mid ]
+				if ( !cm.alive || !_inRangeAndFacing( p, cm ) ) {
+					continue
 				}
+				cm.hp -= p.attackDamage * _buffMultiplier( p ) * skill.multiplier
+				if ( cm.aggressive ) {
+					cm.state = "chase"
+					cm.targetPlayerId = playerId
+				}
+				if ( cm.hp <= 0 ) {
+					_handleKill( playerId, cm )
+					killedAny = true
+				}
+				variables.playerService.broadcastAll( { type: "monsterUpdate", id: mid, hp: cm.hp, alive: cm.alive } )
 			}
+			p.skillCooldowns[ skillId ] = now + skill.cooldown
+			if ( killedAny ) {
+				variables.playerService.sendStats( playerId )
+				variables.playerService.persist( playerId )
+			}
+			return
+		}
 
+		// singleTarget / execute — both need a real, in-range, in-front target.
+		if ( !structKeyExists( variables.monsters, targetId ) ) {
+			return
+		}
+		var m = variables.monsters[ targetId ]
+		if ( !m.alive || !_inRangeAndFacing( p, m ) ) {
+			return
+		}
+		if ( skill.effect == "execute" && m.hp > m.maxHp * skill.executeThreshold ) {
+			return
+		}
+
+		p.skillCooldowns[ skillId ] = now + skill.cooldown
+
+		m.hp -= p.attackDamage * _buffMultiplier( p ) * skill.multiplier
+		if ( m.aggressive ) {
+			m.state = "chase"
+			m.targetPlayerId = playerId
+		}
+
+		if ( m.hp <= 0 ) {
+			_handleKill( playerId, m )
+			variables.playerService.sendStats( playerId )
 			variables.playerService.persist( playerId )
 		}
 
@@ -176,14 +292,19 @@ class {
 		for ( var mid in variables.monsters ) {
 			var m = variables.monsters[ mid ]
 
-			// Nobody's anywhere near this one — skip wander/aggro/respawn
-			// processing entirely rather than spending a tick animating a
-			// monster no client can see. It picks back up exactly where a
-			// live one would've been (mid-wander position, or a corpse
-			// waiting past its respawnAt) the moment a player gets close
-			// enough again, just running "behind" by however long it was
-			// unobserved — invisible either way, so nothing to notice.
-			if ( nearestPlayerDistance( m, players ) > visRadius ) {
+			// Cached here (rather than left for monsterSnapshot() to
+			// recompute independently right after this same tick) since it's
+			// the same distance scan either way — computing it once and
+			// reusing the flag halves the nearestPlayerDistance() calls per
+			// tick. Nobody's anywhere near this one — skip wander/aggro/
+			// respawn processing entirely rather than spending a tick
+			// animating a monster no client can see. It picks back up
+			// exactly where a live one would've been (mid-wander position,
+			// or a corpse waiting past its respawnAt) the moment a player
+			// gets close enough again, just running "behind" by however long
+			// it was unobserved — invisible either way, so nothing to notice.
+			m.visibleThisTick = nearestPlayerDistance( m, players ) <= visRadius
+			if ( !m.visibleThisTick ) {
 				continue
 			}
 

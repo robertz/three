@@ -3,7 +3,7 @@ import { createWorld } from "./world.js";
 import { createPlayer, updatePlayer } from "./player.js";
 import { createCameraController, updateCamera } from "./camera.js";
 import { createMonsterRegistry, updateMonsterAnimations, updateMonsterPositions } from "./monsters.js";
-import { createCombat, updateCombat, useSkill, getTarget, selectNearestTarget, SKILL_COOLDOWN } from "./combat.js";
+import { createCombat, updateCombat, useSkill, getTarget, selectNearestTarget } from "./combat.js";
 import { createHud } from "./hud.js";
 import { connectNetwork, updateNetwork } from "./network.js";
 import { checkSession, showAuthScreen } from "./auth.js";
@@ -13,6 +13,7 @@ import { createInventory } from "./inventory.js";
 import { createEquipment } from "./equipment.js";
 import { createCharacterSheet } from "./characterSheet.js";
 import { createShop } from "./shop.js";
+import { createActionBar } from "./actionBar.js";
 import { applyEquipmentVisual } from "./equipVisual.js";
 import { createNpcRegistry, updateNpcAnimations, getNearestNpc } from "./npc.js";
 import { createZoneBanner } from "./zone.js";
@@ -56,6 +57,8 @@ async function main() {
 
   let dead = false;
   let network;
+  let actionBar; // assigned below, after `combat` exists — referenced here
+  // via closure the same way `network` itself already is.
   const chat = createChat((text) => network.sendChat(text));
   const inventory = createInventory(
     (itemKey) => network.sendUseItem(itemKey),
@@ -74,7 +77,10 @@ async function main() {
       dead = false;
     },
     onChat: chat.addLine,
-    onInventory: inventory.setItems,
+    onInventory: (items) => {
+      inventory.setItems(items);
+      actionBar.setInventory(items);
+    },
     onEquipment: (slots) => {
       equipment.setSlots(slots);
       characterSheet.setEquipment(slots);
@@ -92,6 +98,12 @@ async function main() {
   });
   const combat = createCombat(camera, renderer.domElement, monsterRegistry);
   const cameraController = createCameraController(renderer.domElement, player);
+  actionBar = createActionBar(
+    (skillId) => {
+      if (!dead) useSkill(combat, player, monsterRegistry, network, skillId);
+    },
+    (itemKey) => network.sendUseItem(itemKey)
+  );
 
   const targetRing = new THREE.Mesh(
     new THREE.RingGeometry(0.7, 0.85, 24),
@@ -102,7 +114,6 @@ async function main() {
   scene.add(targetRing);
 
   window.addEventListener("keydown", (e) => {
-    if (e.key === "1" && !dead) useSkill(combat, player, monsterRegistry, network);
     if ((e.key === "b" || e.key === "B") && shop.isInRange()) shop.toggle();
     if (e.key === "Tab") {
       e.preventDefault();
@@ -150,8 +161,10 @@ async function main() {
 
     hud.updatePlayer(player);
     hud.updateTarget(target);
-    hud.updateSkill(combat.skillCooldown, SKILL_COOLDOWN);
     hud.setDead(dead);
+    actionBar.setLevel(player.level);
+    actionBar.setSkillCooldowns(combat.skillCooldowns);
+    actionBar.setDisabled(dead);
     characterSheet.update(player);
 
     renderer.render(scene, camera);

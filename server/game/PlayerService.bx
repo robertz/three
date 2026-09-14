@@ -40,7 +40,9 @@ class {
 		saved[ "lastSaveAt" ] = 0
 		saved[ "respawning" ] = false
 		saved[ "attackReadyAt" ] = 0
-		saved[ "skillReadyAt" ] = 0
+		saved[ "skillCooldowns" ] = {}
+		saved[ "damageBuffMultiplier" ] = 1
+		saved[ "damageBuffExpiresAt" ] = 0
 		saved[ "username" ] = variables.authService.usernameForAccountId( accountId )
 		saved[ "baseAttackDamage" ] = saved.attackDamage
 		saved[ "baseMaxHp" ] = saved.maxHp
@@ -88,8 +90,14 @@ class {
 		}
 	}
 
+	// Iterates a snapshot of ids (not structCopy(variables.players), which
+	// would duplicate every player's full live state just to get a stable
+	// key list) — safeSend()'s on-failure structDelete() can remove an id
+	// from variables.players mid-loop, so the structKeyExists() check below
+	// still matters even though the id list itself can no longer be mutated
+	// out from under us.
 	function broadcastExcept( excludeId, payload ) {
-		for ( var id in structCopy( variables.players ) ) {
+		for ( var id in structKeyArray( variables.players ) ) {
 			if ( id != excludeId && structKeyExists( variables.players, id ) && !variables.players[ id ].connection.isClosed() ) {
 				safeSend( id, payload )
 			}
@@ -97,7 +105,7 @@ class {
 	}
 
 	function broadcastAll( payload ) {
-		for ( var id in structCopy( variables.players ) ) {
+		for ( var id in structKeyArray( variables.players ) ) {
 			if ( structKeyExists( variables.players, id ) && !variables.players[ id ].connection.isClosed() ) {
 				safeSend( id, payload )
 			}
@@ -111,7 +119,7 @@ class {
 	}
 
 	function kickExistingConnection( accountId ) {
-		for ( var pid in structCopy( variables.players ) ) {
+		for ( var pid in structKeyArray( variables.players ) ) {
 			if ( variables.players[ pid ].accountId == accountId ) {
 				persist( pid )
 				sendToPlayer( pid, { type: "kicked" } )

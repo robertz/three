@@ -23,6 +23,37 @@ class extends="testbox.system.BaseSpec" {
 				expect( monsterTypes.boar.respawnDelay ).toBeGT( 0 )
 			} )
 
+			it( "gives every skill type the fields combat code depends on, unlocked in non-decreasing level order", function() {
+				var gameConfig = new game.GameConfig()
+				var skillTypes = gameConfig.getSkillTypes()
+
+				expect( skillTypes ).toHaveKey( "heroicStrike" )
+				expect( skillTypes ).toHaveKey( "cleave" )
+				expect( skillTypes ).toHaveKey( "execute" )
+				expect( skillTypes ).toHaveKey( "rampage" )
+
+				// Plain struct literals don't guarantee enumeration order in
+				// BoxLang, so the "unlocked in non-decreasing level order"
+				// check walks this explicit, intended order rather than
+				// relying on however skillTypes happens to iterate.
+				var orderedIds = [ "heroicStrike", "cleave", "execute", "rampage" ]
+				var lastLevel = 0
+				for ( var id in orderedIds ) {
+					var skill = skillTypes[ id ]
+					expect( skill ).toHaveKey( "name" )
+					expect( skill ).toHaveKey( "levelRequired" )
+					expect( skill ).toHaveKey( "cooldown" )
+					expect( skill.levelRequired ).toBeGTE( lastLevel )
+					expect( skill.cooldown ).toBeGT( 0 )
+					lastLevel = skill.levelRequired
+				}
+
+				expect( skillTypes.heroicStrike.levelRequired ).toBe( 1 )
+				expect( skillTypes.execute.executeThreshold ).toBeGT( 0 )
+				expect( skillTypes.rampage.buffMultiplier ).toBeGT( 1 )
+				expect( skillTypes.rampage.buffDuration ).toBeGT( 0 )
+			} )
+
 			it( "lays out all 8 zones as contiguous, non-overlapping concentric bands", function() {
 				var gameConfig = new game.GameConfig()
 				var zones = gameConfig.getZones()

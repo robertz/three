@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { isDown } from "./input.js";
 import { createCharacterMesh } from "./character.js";
 import { setAnimation } from "./models.js";
+import { nearbyObstacles } from "./world.js";
 
 const MOVE_SPEED = 8;
 const PLAYER_RADIUS = 0.5;
@@ -46,7 +47,7 @@ export function updatePlayer(player, delta, world) {
     // world.js), and THREE.Vector3.distanceTo's 3D distance was folding that
     // vertical offset into the check, letting the player get closer
     // horizontally than the intended radius before it finally tripped.
-    const blocked = world.obstacles.some((obstacle) => {
+    const blocked = nearbyObstacles(world, nextPos.x, nextPos.z).some((obstacle) => {
       const dx = obstacle.position.x - nextPos.x;
       const dz = obstacle.position.z - nextPos.z;
       return Math.hypot(dx, dz) < obstacle.radius + PLAYER_RADIUS;

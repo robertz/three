@@ -17,8 +17,6 @@ class {
 		variables.deathXpPenalty = 0.1
 		variables.attackRange = 3
 		variables.attackCooldown = 1
-		variables.skillCooldown = 4
-		variables.skillMultiplier = 2
 		variables.saveIntervalSeconds = 5
 		variables.chatMaxLength = 200
 
@@ -36,9 +34,11 @@ class {
 
 		variables.itemTypes = {}
 		variables.monsterTypes = {}
+		variables.skillTypes = {}
 		variables.zones = []
 		variables.npcs = {}
 
+		_buildSkills()
 		_buildApple()
 		_buildWolfFang()
 		_buildMeadow()
@@ -56,6 +56,29 @@ class {
 		_generateWorldLayout()
 
 		return this
+	}
+
+	// ── Abilities ────────────────────────────────────────────────────────────
+	// Each unlocks at a level chosen against grantXp()'s curve in
+	// PlayerService.bx (+3 atk/+20 hp per level, 1.3x XP escalation) — level
+	// 20 is a real mid-game target, not an effectively-unreachable capstone.
+	// Independent cooldowns (no shared "GCD"): using one doesn't block
+	// another. Only the fields each effect type actually reads are set —
+	// e.g. "cleave" has no executeThreshold, "selfBuff" has no multiplier.
+
+	private function _buildSkills() {
+		variables.skillTypes[ "heroicStrike" ] = {
+			name: "Heroic Strike", levelRequired: 1, cooldown: 4, effect: "singleTarget", multiplier: 2
+		}
+		variables.skillTypes[ "cleave" ] = {
+			name: "Cleave", levelRequired: 5, cooldown: 6, effect: "cleave", multiplier: 1
+		}
+		variables.skillTypes[ "execute" ] = {
+			name: "Execute", levelRequired: 12, cooldown: 8, effect: "execute", multiplier: 4, executeThreshold: 0.25
+		}
+		variables.skillTypes[ "rampage" ] = {
+			name: "Rampage", levelRequired: 20, cooldown: 25, effect: "selfBuff", buffMultiplier: 1.5, buffDuration: 8
+		}
 	}
 
 	// ── Shared drops ─────────────────────────────────────────────────────────
@@ -382,6 +405,7 @@ class {
 	function getMonsterTypes() { return variables.monsterTypes }
 	function getZones() { return variables.zones }
 	function getItemTypes() { return variables.itemTypes }
+	function getSkillTypes() { return variables.skillTypes }
 	function getEquipSlots() { return variables.equipSlots }
 	function getNpcs() { return variables.npcs }
 	function getShopRange() { return variables.shopRange }
@@ -395,8 +419,6 @@ class {
 	function getDeathXpPenalty() { return variables.deathXpPenalty }
 	function getAttackRange() { return variables.attackRange }
 	function getAttackCooldown() { return variables.attackCooldown }
-	function getSkillCooldown() { return variables.skillCooldown }
-	function getSkillMultiplier() { return variables.skillMultiplier }
 	function getSaveIntervalSeconds() { return variables.saveIntervalSeconds }
 	function getChatMaxLength() { return variables.chatMaxLength }
 	function getMonsterVisibilityRadius() { return variables.monsterVisibilityRadius }
