@@ -43,6 +43,7 @@ class {
 		saved[ "connection" ] = connection
 		saved[ "lastSaveAt" ] = 0
 		saved[ "respawning" ] = false
+		saved[ "lastRegenAt" ] = 0
 		saved[ "attackReadyAt" ] = 0
 		saved[ "skillCooldowns" ] = {}
 		saved[ "damageBuffMultiplier" ] = 1
@@ -219,15 +220,23 @@ class {
 	function grantXp( playerId, amount ) {
 		var p = variables.players[ playerId ]
 		p.xp += amount
+		var leveledUp = false
 		while ( p.xp >= p.xpToNext ) {
 			p.xp -= p.xpToNext
 			p.level += 1
 			p.baseMaxHp += 20
 			p.baseAttackDamage += 3
 			p.xpToNext = round( p.xpToNext * 1.3 )
+			leveledUp = true
 		}
 		recomputeEffectiveStats( playerId )
-		p.hp = p.maxHp
+		// A plain kill no longer fully heals the player — only an actual
+		// level-up does (the traditional "ding" full heal). Recovery
+		// between fights that don't level you up is tickPlayerRegen()'s
+		// job now.
+		if ( leveledUp ) {
+			p.hp = p.maxHp
+		}
 	}
 
 	function addGold( playerId, amount ) {
@@ -269,6 +278,28 @@ class {
 				sendStats( pid )
 				broadcastExcept( pid, { type: "move", id: pid, x: 0, z: 0, rotationY: 0 } )
 			}
+		}
+	}
+
+	// Slow passive regen for anyone below max hp — same lastXAt/interval
+	// pattern maybeAutosave() already uses, so this doesn't need its own
+	// per-tick math (or a stats broadcast) every 0.2s tick, only once per
+	// regen interval per player.
+	function tickPlayerRegen() {
+		var now = getTickCount() / 1000
+		var intervalSeconds = variables.gameConfig.getHpRegenIntervalSeconds()
+		var regenPercent = variables.gameConfig.getHpRegenPercent()
+		for ( var pid in structCopy( variables.players ) ) {
+			var p = variables.players[ pid ]
+			if ( ( p.respawning ?: false ) || p.hp <= 0 || p.hp >= p.maxHp ) {
+				continue
+			}
+			if ( now - p.lastRegenAt < intervalSeconds ) {
+				continue
+			}
+			p.lastRegenAt = now
+			p.hp = min( p.maxHp, p.hp + p.maxHp * regenPercent )
+			sendStats( pid )
 		}
 	}
 

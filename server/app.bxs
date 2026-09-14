@@ -46,6 +46,7 @@ for ( zone in gameConfig.getZones() ) {
 
 app.schedule( gameConfig.getTickSeconds() * 1000, () => {
 	playerService.tickPlayerRespawns()
+	playerService.tickPlayerRegen()
 	monsterService.tickMonsterAI()
 	playerService.broadcastAll( { type: "monsters", list: monsterService.monsterSnapshot() } )
 } )

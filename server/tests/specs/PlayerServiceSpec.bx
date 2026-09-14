@@ -75,6 +75,45 @@ class extends="testbox.system.BaseSpec" {
 				expect( p.hp ).toBe( p.maxHp )
 			} )
 
+			it( "grantXp does NOT heal the player when it doesn't cross a level threshold", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				p.hp = 1
+
+				variables.playerService.grantXp( playerId, 1 )
+
+				expect( p.level ).toBe( 1 )
+				expect( p.hp ).toBe( 1 )
+			} )
+
+			it( "tickPlayerRegen heals a fraction of max hp once the regen interval has elapsed, and not before", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				p.hp = 1
+				p.lastRegenAt = getTickCount() / 1000
+
+				variables.playerService.tickPlayerRegen()
+				expect( p.hp ).toBe( 1 )   // regen interval hasn't elapsed yet
+
+				p.lastRegenAt = 0   // force the interval to have "elapsed"
+				variables.playerService.tickPlayerRegen()
+
+				expect( p.hp ).toBeGT( 1 )
+				expect( p.hp ).toBeLTE( p.maxHp )
+			} )
+
+			it( "tickPlayerRegen never regenerates a respawning or dead player", function() {
+				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
+				var p = variables.playerService.getPlayers()[ playerId ]
+				p.hp = 0
+				p.respawning = true
+				p.lastRegenAt = 0
+
+				variables.playerService.tickPlayerRegen()
+
+				expect( p.hp ).toBe( 0 )
+			} )
+
 			it( "addGold increments gold by the exact amount", function() {
 				var playerId = variables.playerService.connect( variables.fakeConnection, variables.accountId, variables.characterId )
 				var p = variables.playerService.getPlayers()[ playerId ]

@@ -19,6 +19,8 @@ class {
 		variables.attackCooldown = 1
 		variables.saveIntervalSeconds = 5
 		variables.chatMaxLength = 200
+		variables.hpRegenIntervalSeconds = 2
+		variables.hpRegenPercent = 0.03
 
 		// How far a monster has to be from EVERY connected player before
 		// MonsterService's tick stops processing it at all (no wander, no
@@ -421,6 +423,8 @@ class {
 	function getAttackCooldown() { return variables.attackCooldown }
 	function getSaveIntervalSeconds() { return variables.saveIntervalSeconds }
 	function getChatMaxLength() { return variables.chatMaxLength }
+	function getHpRegenIntervalSeconds() { return variables.hpRegenIntervalSeconds }
+	function getHpRegenPercent() { return variables.hpRegenPercent }
 	function getMonsterVisibilityRadius() { return variables.monsterVisibilityRadius }
 
 	// Resolves each npc's raw shopCatalog item keys (the source of truth
