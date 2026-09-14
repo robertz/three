@@ -17,7 +17,12 @@ class {
 		variables.javaMath = createObject( "java", "java.lang.Math" )
 
 		variables.players = {}
-		variables.nextPlayerId = 0
+		// AtomicLong, not a plain numeric var — two connects arriving on two
+		// different connections' executor threads at nearly the same instant
+		// can both read the same pre-increment value with a plain `++`,
+		// handing out the same playerId to both and letting one silently
+		// clobber the other's entry in `variables.players`.
+		variables.nextPlayerId = createObject( "java", "java.util.concurrent.atomic.AtomicLong" ).init( 0 )
 
 		return this
 	}
@@ -31,8 +36,7 @@ class {
 	function connect( connection, accountId, characterId ) {
 		kickExistingConnection( accountId )
 
-		variables.nextPlayerId++
-		var playerId = "p#variables.nextPlayerId#"
+		var playerId = "p#variables.nextPlayerId.incrementAndGet()#"
 		var saved = variables.characterService.load( characterId )
 		saved[ "accountId" ] = accountId
 		saved[ "characterId" ] = characterId
@@ -92,40 +96,63 @@ class {
 
 	// Iterates a snapshot of ids (not structCopy(variables.players), which
 	// would duplicate every player's full live state just to get a stable
-	// key list) — safeSend()'s on-failure structDelete() can remove an id
-	// from variables.players mid-loop, so the structKeyExists() check below
-	// still matters even though the id list itself can no longer be mutated
-	// out from under us.
+	// key list) — another connection's own onConnect/onClose handler can
+	// structDelete() an id out of variables.players at any point during this
+	// loop (kickExistingConnection, a disconnect, safeSend()'s own
+	// on-failure cleanup), so a structKeyExists() check can no longer
+	// guarantee the entry is still there by the time the very next line
+	// dereferences it. try/catch — not a second existence check — is what
+	// actually closes that gap, since checking and using can never be made
+	// one atomic step against a plain unsynchronized struct.
 	function broadcastExcept( excludeId, payload ) {
 		for ( var id in structKeyArray( variables.players ) ) {
-			if ( id != excludeId && structKeyExists( variables.players, id ) && !variables.players[ id ].connection.isClosed() ) {
-				safeSend( id, payload )
+			if ( id == excludeId ) {
+				continue
+			}
+			try {
+				if ( !variables.players[ id ].connection.isClosed() ) {
+					safeSend( id, payload )
+				}
+			} catch ( any e ) {
+				// disconnected between the id snapshot above and this check — skip it
 			}
 		}
 	}
 
 	function broadcastAll( payload ) {
 		for ( var id in structKeyArray( variables.players ) ) {
-			if ( structKeyExists( variables.players, id ) && !variables.players[ id ].connection.isClosed() ) {
-				safeSend( id, payload )
+			try {
+				if ( !variables.players[ id ].connection.isClosed() ) {
+					safeSend( id, payload )
+				}
+			} catch ( any e ) {
+				// disconnected between the id snapshot above and this check — skip it
 			}
 		}
 	}
 
 	function sendToPlayer( playerId, payload ) {
-		if ( structKeyExists( variables.players, playerId ) && !variables.players[ playerId ].connection.isClosed() ) {
-			safeSend( playerId, payload )
+		try {
+			if ( !variables.players[ playerId ].connection.isClosed() ) {
+				safeSend( playerId, payload )
+			}
+		} catch ( any e ) {
+			// not connected (never was, or disconnected concurrently) — no-op
 		}
 	}
 
 	function kickExistingConnection( accountId ) {
 		for ( var pid in structKeyArray( variables.players ) ) {
-			if ( variables.players[ pid ].accountId == accountId ) {
-				persist( pid )
-				sendToPlayer( pid, { type: "kicked" } )
-				variables.players[ pid ].connection.close()
-				structDelete( variables.players, pid )
-				broadcastExcept( pid, { type: "leave", id: pid } )
+			try {
+				if ( variables.players[ pid ].accountId == accountId ) {
+					persist( pid )
+					sendToPlayer( pid, { type: "kicked" } )
+					variables.players[ pid ].connection.close()
+					structDelete( variables.players, pid )
+					broadcastExcept( pid, { type: "leave", id: pid } )
+				}
+			} catch ( any e ) {
+				// already gone — nothing to kick
 			}
 		}
 	}
@@ -156,11 +183,15 @@ class {
 	}
 
 	function sendStats( playerId ) {
-		var p = variables.players[ playerId ]
-		sendToPlayer( playerId, {
-			type: "stats", level: p.level, hp: p.hp, maxHp: p.maxHp, xp: p.xp,
-			xpToNext: p.xpToNext, attackDamage: p.attackDamage, gold: p.gold
-		} )
+		try {
+			var p = variables.players[ playerId ]
+			sendToPlayer( playerId, {
+				type: "stats", level: p.level, hp: p.hp, maxHp: p.maxHp, xp: p.xp,
+				xpToNext: p.xpToNext, attackDamage: p.attackDamage, gold: p.gold
+			} )
+		} catch ( any e ) {
+			// player disconnected (e.g. kicked by a racing reconnect) before this ran
+		}
 	}
 
 	// Recomputes effective (combat/HUD-facing) attackDamage/maxHp as base stats
@@ -263,25 +294,33 @@ class {
 	}
 
 	function sendInventory( playerId ) {
-		var p = variables.players[ playerId ]
-		var itemTypes = variables.gameConfig.getItemTypes()
-		var items = []
-		for ( var row in variables.inventoryService.list( p.characterId ) ) {
-			var itemType = itemTypes[ row.key ]
-			items.append( { key: row.key, name: itemType.name, usable: itemType.usable, quantity: row.quantity, equipSlot: itemType.equipSlot, rarity: itemType.rarity, sellPrice: itemType.sellPrice } )
+		try {
+			var p = variables.players[ playerId ]
+			var itemTypes = variables.gameConfig.getItemTypes()
+			var items = []
+			for ( var row in variables.inventoryService.list( p.characterId ) ) {
+				var itemType = itemTypes[ row.key ]
+				items.append( { key: row.key, name: itemType.name, usable: itemType.usable, quantity: row.quantity, equipSlot: itemType.equipSlot, rarity: itemType.rarity, sellPrice: itemType.sellPrice } )
+			}
+			sendToPlayer( playerId, { type: "inventory", items: items } )
+		} catch ( any e ) {
+			// player disconnected (e.g. kicked by a racing reconnect) before this ran
 		}
-		sendToPlayer( playerId, { type: "inventory", items: items } )
 	}
 
 	function sendEquipment( playerId ) {
-		var p = variables.players[ playerId ]
-		var itemTypes = variables.gameConfig.getItemTypes()
-		var slots = []
-		for ( var slot in variables.gameConfig.getEquipSlots() ) {
-			var key = p.equipment[ slot ]
-			slots.append( { slot: slot, key: key, name: len( key ) ? itemTypes[ key ].name : "", rarity: len( key ) ? itemTypes[ key ].rarity : "" } )
+		try {
+			var p = variables.players[ playerId ]
+			var itemTypes = variables.gameConfig.getItemTypes()
+			var slots = []
+			for ( var slot in variables.gameConfig.getEquipSlots() ) {
+				var key = p.equipment[ slot ]
+				slots.append( { slot: slot, key: key, name: len( key ) ? itemTypes[ key ].name : "", rarity: len( key ) ? itemTypes[ key ].rarity : "" } )
+			}
+			sendToPlayer( playerId, { type: "equipment", slots: slots } )
+		} catch ( any e ) {
+			// player disconnected (e.g. kicked by a racing reconnect) before this ran
 		}
-		sendToPlayer( playerId, { type: "equipment", slots: slots } )
 	}
 
 	function handleUseItem( playerId, itemKey ) {
