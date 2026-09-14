@@ -6,6 +6,8 @@ Three.js on the client and
 (Originally prototyped with Ragnarok Online naming/theming — see Milestone 18
 for the pivot.)
 
+![Three gameplay screenshot](three_screenshot.png)
+
 ## Stack
 
 - **Client**: Three.js + Vite, `client/`.
@@ -725,11 +727,33 @@ skipping straight back in).
 
 ## Running it
 
+**First-time server setup** (requires the BoxLang CLI and a local MySQL
+server) — do this before either option below:
+
+```bash
+cd server
+box install
+mysql -uroot -e "CREATE DATABASE IF NOT EXISTS three"
+mysql -uroot three < db/schema.sql
+cp .env.example .env   # edit if your MySQL isn't root@127.0.0.1:3306 with no password
+```
+
+`start.sh` loads `.env` and passes `--bx-config ./boxlang.json` —
+`boxlang app.bxs` on its own won't pick up the datasource config, and
+`${env.DB_PASSWORD}` needs the var to actually exist (even empty) rather
+than relying on the JSON-side default. **Skip this and `./start.sh` won't
+error — it hangs silently with no output at all** (confirmed directly:
+the process starts, never prints "Game server listening", never exits,
+never prints anything), which looks exactly like a slow first boot rather
+than a missing setup step. If `./start.sh` produces nothing after a few
+seconds, this is almost certainly why — check `.env` exists before
+assuming it's just slow.
+
 **Option A — single server (play at `localhost:3001` only):**
 
 ```bash
 cd client && npm install && npm run build
-cd ../server && ./start.sh   # see setup below if this is a fresh checkout
+cd ../server && ./start.sh
 ```
 
 Rebuild (`npm run build`) and restart the server after any client change.
@@ -744,28 +768,12 @@ npm install
 npm run dev   # localhost:5173
 ```
 
-Server, in another terminal (setup below):
+Server, in another terminal:
 
 ```bash
 cd server
 ./start.sh   # localhost:3001
 ```
-
-**First-time server setup** (requires the BoxLang CLI and a local MySQL
-server):
-
-```bash
-cd server
-box install boxlang-express boxlang_modules
-mysql -uroot -e "CREATE DATABASE IF NOT EXISTS three"
-mysql -uroot three < db/schema.sql
-cp .env.example .env   # edit if your MySQL isn't root@127.0.0.1:3306 with no password
-```
-
-`start.sh` loads `.env` and passes `--bx-config ./boxlang.json` —
-`boxlang app.bxs` on its own won't pick up the datasource config, and
-`${env.DB_PASSWORD}` needs the var to actually exist (even empty) rather
-than relying on the JSON-side default.
 
 **Running the server test suite** (TestBox, `server/tests/specs/`):
 
